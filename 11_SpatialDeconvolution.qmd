@@ -1,0 +1,960 @@
+---
+title: "Endometrial lesions GEOMX"
+subtitle: "Spatial decon"
+author: "Emily Johnson & Jamie Soul"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Spatial deconvolution
+
+## Load libraries
+
+```{r}
+#| output: false
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(SpatialDecon)
+library(Seurat)
+library(SeuratDisk)
+library(ComplexHeatmap)
+library(SingleR)
+library(celldex)
+library(cowplot)
+library(limma)
+library(speckle)
+source("src/palettes.R")
+source("src/utilityFunctions.R")
+
+set.seed(123)
+```
+
+Note this notebook requires \~30Gb RAM to run as it processes very large single cell sequencing count matrices. The data is generally stored as spare matrices but the SpatialDecon library requires the use of dense matrices which is memory intensive.
+
+## Prepare Atlas single-cell data
+
+The reproductive cell atlas includes a endometrial dataset with broad and fine annotations. The immune cell sub annotations shown in a figure in the corresponding paper are not available and difficult to reproduce. Instead, we use singleR to automatically annotate the endometrial immune clusters so we can then use the labelled data to deconvolute the CD45 samples.
+
+```{r}
+#| eval: true
+#| echo: true
+#make sure we don't timeout during the file download as this is a large file
+#options(timeout = 100000000)
+#download.file("https://cellgeni.cog.sanger.ac.uk/vento/reproductivecellatlas/endometrium_all.h5ad","data/endometrium_all.h5ad")
+Convert("data/endometrium_all.h5ad", dest = "h5seurat", overwrite = TRUE)
+
+```
+
+## Annotate immune cells
+
+```{r}
+#load the seurat data
+endometrium <- LoadH5Seurat("data/endometrium_all.h5seurat")
+
+#select just the immune cells
+immune <- endometrium[,endometrium$`Broad cell type`=="Immune"]
+
+#process the data to find clusters and visualise in low dim space
+immune <- FindVariableFeatures(immune, selection.method = "vst", nfeatures = 5000)
+all.genes <- rownames(immune)
+immune <- ScaleData(immune, features = all.genes)
+immune <- RunPCA(immune, features = VariableFeatures(object = immune))
+immune <- FindNeighbors(immune, dims = 1:20)
+immune <- FindClusters(immune, resolution = 0.1)
+immune <- RunUMAP(immune, dims = 1:20)
+immune <- RunTSNE(immune)
+#The MonacoImmuneData seems to have the best granularity of the annotations for this project
+ref <- MonacoImmuneData()
+
+#use the loaded reference data to annotate the immune data
+pred <- SingleR(test = as.SingleCellExperiment(immune), ref = ref, assay.type.test=1,
+                     labels = ref$label.main)
+
+#how many of each cell type are labelled?
+predictionTable <- data.frame(table(pred$labels))
+colnames(predictionTable) <- c("CellType","Number")
+
+#add the labels to to the 
+immune[["SingleR.labels"]] <- pred$labels
+#visualise the data by predicted cell type label
+
+cell_colours <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3") %>% magrittr::set_names(as.character(unique(immune@meta.data[["SingleR.labels"]])))
+
+g1 <-  TSNEPlot(immune)
+g2 <- TSNEPlot(immune,group.by = "SingleR.labels")
+
+g2 <- g2 + scale_colour_manual(values = cell_colours)
+
+
+g <- plot_grid(plotlist = list(g1,g2),ncol = 2)
+
+cowplot::save_plot("figures/deconv/immuneAnnotations.png",g,base_width = 12,base_height = 5,bg="white")
+
+g
+
+```
+
+## Load the normalised data
+
+```{r}
+
+target_spatialData <- readRDS("results/normalised_spatial_data.RDS")
+target_spatial_data_geoDiff <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+
+```
+
+
+## Calculate background scores
+
+```{r}
+
+bg <- derive_GeoMx_background(norm = target_spatialData@assayData$q_norm,
+                             probepool = fData(target_spatialData)$Module,
+                             negnames = "NegProbe-WTX")
+
+
+```
+
+## Set up immune cell profile
+
+```{r}
+
+genes <- rownames(immune@assays$RNA)
+immune <- immune[ genes %in% rownames(target_spatialData),]
+
+#get the cell type annotations
+immuneLabels <- data.frame(CellID=names(immune$SingleR.labels),LabeledCellType=as.character(immune$SingleR.labels))
+
+immuneClusterLabels <- data.frame(CellID=names(immune$seurat_clusters),LabeledCellType=as.character(immune$seurat_clusters))
+
+#function to create a dense matrix from a sparse matrix in a memory efficient way
+as_matrix <- function(mat){
+
+  tmp <- matrix(data=0L, nrow = mat@Dim[1], ncol = mat@Dim[2])
+  
+  row_pos <- mat@i+1
+  col_pos <- findInterval(seq(mat@x)-1,mat@p[-1])+1
+  val <- mat@x
+    
+  for (i in seq_along(val)){
+      tmp[row_pos[i],col_pos[i]] <- val[i]
+  }
+    
+  row.names(tmp) <- mat@Dimnames[[1]]
+  colnames(tmp) <- mat@Dimnames[[2]]
+  return(tmp)
+}
+
+#create a dense matrix from the sparse matrix
+immune <- as_matrix(immune@assays$RNA@counts)
+
+custom_mtx <- create_profile_matrix(
+  mtx = immune,
+  cellAnnots = immuneLabels,
+  cellTypeCol = "LabeledCellType",
+  cellNameCol = "CellID",
+  matrixName = "endometrium",
+  outDir = NULL,
+  normalize = FALSE,
+  minCellNum = 5,
+  minGenes = 10,
+  scalingFactor = 5,
+  discardCellTypes = TRUE
+)         
+
+saveRDS(custom_mtx,file="data/endometrium_immune_auto.RDS")
+
+
+custom_mtx <- create_profile_matrix(
+  mtx = immune,
+  cellAnnots = immuneClusterLabels,
+  cellTypeCol = "LabeledCellType",
+  cellNameCol = "CellID",
+  matrixName = "endometrium",
+  outDir = NULL,
+  normalize = FALSE,
+  minCellNum = 5,
+  minGenes = 10,
+  scalingFactor = 5,
+  discardCellTypes = TRUE
+)         
+
+saveRDS(custom_mtx,file="data/endometrium_immune_clusers.RDS")
+```
+
+## Set up broad and fine cell profiles
+
+```{r}
+#| eval: true
+#| echo: true
+genes <- rownames(endometrium@assays$RNA)
+endometrium <- endometrium[ genes %in% rownames(target_spatialData),]
+
+#get the cell type annotations
+cellTypes.fine <- data.frame(CellID=names(endometrium$`Cell type`),LabeledCellType=as.character(endometrium$`Cell type`))
+cellTypes.broad <- data.frame(CellID=names(endometrium$`Broad cell type`),LabeledCellType=as.character(endometrium$`Broad cell type`))
+
+#create a dense matrix from the sparse matrix
+endometrium <- as_matrix(endometrium@assays$RNA@counts)
+
+
+#create the profile matrix
+custom_mtx <-
+  create_profile_matrix(
+    mtx = endometrium,
+    # cell x gene count matrix
+    cellAnnots = cellTypes.fine,
+    # cell annotations with cell type and cell name as columns
+    cellTypeCol = "LabeledCellType",
+    # column containing cell type
+    cellNameCol = "CellID",
+    # column containing cell ID/name
+    matrixName = "endometrium",
+    # name of final profile matrix
+    outDir = NULL,
+    # path to desired output directory, set to NULL if matrix should not be written
+    normalize = FALSE,
+    # Should data be normalized?
+    minCellNum = 5,
+    # minimum number of cells of one type needed to create profile, exclusive
+    minGenes = 10,
+    # minimum number of genes expressed in a cell, exclusive
+    scalingFactor = 5,
+    # what should all values be multiplied by for final matrix
+    discardCellTypes = TRUE
+  )
+
+saveRDS(custom_mtx, file = "data/endometrium_atlas_fine.RDS")
+
+custom_mtx <-
+  create_profile_matrix(
+    mtx = endometrium,
+    # cell x gene count matrix
+    cellAnnots = cellTypes.broad,
+    # cell annotations with cell type and cell name as columns
+    cellTypeCol = "LabeledCellType",
+    # column containing cell type
+    cellNameCol = "CellID",
+    # column containing cell ID/name
+    matrixName = "endometrium",
+    # name of final profile matrix
+    outDir = NULL,
+    # path to desired output directory, set to NULL if matrix should not be written
+    normalize = FALSE,
+    # Should data be normalized?
+    minCellNum = 5,
+    # minimum number of cells of one type needed to create profile, exclusive
+    minGenes = 10,
+    # minimum number of genes expressed in a cell, exclusive
+    scalingFactor = 5,
+    # what should all values be multiplied by for final matrix
+    discardCellTypes = TRUE
+  )
+
+saveRDS(custom_mtx,file="data/endometrium_atlas_broad.RDS")
+```
+
+## Deconvolute using broad annotations
+
+The broad annotations show good correspondence to the known regions
+
+```{r}
+custom_mtx <- readRDS(file="data/endometrium_atlas_broad.RDS")
+res <- runspatialdecon(object = target_spatialData,
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = custom_mtx,
+                      align_genes = TRUE)
+
+dat <- t(res$beta)
+colnames(dat) <- row.names(pData(target_spatialData))
+
+dat <- dat[ rowSums(dat)>0,]
+
+column_ha = HeatmapAnnotation(df = pData(target_spatialData)[, c("segment", "region")], col=list(region = project_palettes$region_colours, segment = project_palettes$segment_colours))
+
+col_fun = circlize::colorRamp2(c(-1, 0, 200), c("#6D9EC1", "white", "firebrick3"))
+p <- Heatmap(dat, name="beta" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+
+png("figures/deconv/CellTypeHeatmap_broad.png",width = 8,height=4,res=600,units="in")
+p
+dev.off()
+p
+
+
+```
+
+
+
+```{r}
+
+#prepare the cell estimate data for plotting
+props <- t(res$prop_of_nontumor)
+props <- props[ rowSums(props)> 0,]
+colnames(props) <- make.names(pData(res)$Annotation,unique = TRUE)
+#p <- Heatmap(dat, name="prop" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+#o = hclust(dist(t(props)))$order
+#props <- props[,o]
+
+
+props <- reshape2::melt(props)
+colnames(props)[1] <- c("CellType")
+props$Label <- word(props$Var2,start = 1,sep="\\.")
+props$Label <- gsub("_", " ", props$Label)
+props$Label <- factor(props$Label, levels = c("PanCK Adenomyosis", "PanCK Basalis", "PanCK Functionalis", "PanCK LE", "CD45 Adenomyosis", "CD45 Basalis", "CD45 Functionalis", "CD31 Adenomyosis", "CD31 Basalis", "CD31 Functionalis", "Stroma Adenomyosis", "Stroma Basalis", "Stroma Functionalis", "Stroma Myometrium near adeno", "Stroma Myometrium near endo"))
+
+#aggregate the estimates per tissue/disease type
+props <- props %>% group_by(Label,CellType) %>% summarise(meanValue=mean(value))
+
+
+#cols1 <- carto_pal(5, "Antique")
+#cols2 <- carto_pal(12, "Safe") 
+#cell_cols <- c(cols1, cols2)
+#dput(as.character(cell_cols))
+
+cell_cols <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+"#999933", "#882255", "#661100", "#6699CC")
+
+g <- ggplot(props, aes(fill=CellType, y=meanValue, x=Label)) + 
+  geom_bar(position="stack", stat="identity") +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values = cell_cols) +
+  ylab("Mean proportion") +
+  xlab("")
+
+g
+
+cowplot::save_plot("figures/deconv/broadcellProp.png",g,base_height = 6,base_width = 8,bg="white")
+
+
+```
+
+```{r}
+
+pheno <- pData(res)
+
+results_props <- data.frame(res$prop_of_nontumor)
+results_props$annotation <- pheno$annotation
+write.csv(results_props, "results/deconv/broad_cell_props.csv")
+
+results_betas <- data.frame(res$beta)
+results_betas$annotation <- pheno$annotation
+write.csv(results_betas, "results/deconv/broad_cell_betas.csv")
+
+
+
+write_rds(res, "results/deconv/broad_cell_res.rds")
+
+```
+
+## Deconvolute using fine annotations
+
+Fine annotation seem less useful and split arbitarily across the similar samples rather than been a mixture of cell types.
+
+```{r}
+custom_mtx <- readRDS(file="data/endometrium_atlas_fine.RDS")
+res <- runspatialdecon(object = target_spatialData,
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = custom_mtx,
+                      align_genes = TRUE)
+
+dat <- t(res$beta)
+colnames(dat) <- row.names(pData(target_spatialData))
+
+dat <- dat[ rowSums(dat)>0,]
+
+column_ha = HeatmapAnnotation(df = pData(target_spatialData)[, c("segment", "region")], col=list(region = project_palettes$region_colours, segment = project_palettes$segment_colours))
+
+
+col_fun = circlize::colorRamp2(c(-1, 0, 200), c("#6D9EC1", "white", "firebrick3"))
+p <- Heatmap(dat, name="beta" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+
+png("figures/deconv/CellTypeHeatmap_fine.png",width = 8,height=4,res=600,units="in")
+p
+dev.off()
+p
+
+dat <- t(res$prop_of_nontumor)
+colnames(dat) <- pData(target_spatialData)$Region
+dat <- dat[ rowSums(dat)>0,]
+
+col_fun = circlize::colorRamp2(c(0, 0, 1), c("white", "white", "firebrick3"))
+p <- Heatmap(dat, name="prop" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+
+png("figures/deconv/CellTypeHeatmap_fineProp.png",width = 8,height=4,res=600,units="in")
+p
+dev.off()
+p
+
+
+```
+
+
+```{r}
+
+#prepare the cell estimate data for plotting
+props <- t(res$prop_of_nontumor)
+props <- props[ rowSums(props)> 0,]
+colnames(props) <- make.names(pData(res)$Annotation,unique = TRUE)
+#p <- Heatmap(dat, name="prop" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+#o = hclust(dist(t(props)))$order
+#props <- props[,o]
+
+
+props <- reshape2::melt(props)
+colnames(props)[1] <- c("CellType")
+props$Label <- word(props$Var2,start = 1,sep="\\.")
+props$Label <- gsub("_", " ", props$Label)
+props$Label <- factor(props$Label, levels = c(
+  "PanCK LE", "PanCK Functionalis", "PanCK Basalis", "PanCK Adenomyosis",
+  "CD45 Functionalis", "CD45 Basalis", "CD45 Adenomyosis",
+  "CD31 Functionalis", "CD31 Basalis", "CD31 Adenomyosis",
+  "Stroma Functionalis", "Stroma Basalis", "Stroma Adenomyosis",
+  "Stroma Myometrium near endo", "Stroma Myometrium near adeno"
+))
+
+#aggregate the estimates per tissue/disease type
+props <- props %>% group_by(Label,CellType) %>% summarise(meanValue=mean(value))
+
+
+#cols1 <- carto_pal(5, "Antique")
+#cols2 <- carto_pal(12, "Safe") 
+#cell_cols <- c(cols1, cols2)
+#dput(as.character(cell_cols))
+
+cell_cols <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+"#999933", "#882255", "#661100", "#6699CC")
+
+g <- ggplot(props, aes(fill=CellType, y=meanValue, x=Label)) + 
+  geom_bar(position="stack", stat="identity") +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values = cell_cols) +
+  ylab("Mean proportion") +
+  xlab("")
+
+g
+
+cowplot::save_plot("figures/deconv/finecellProp.png",g,base_height = 6.5,base_width = 8,bg="white")
+
+
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+#| output: false
+
+#prepare the cell estimate data for plotting
+props <- t(res$prop_of_nontumor)
+props <- props[ rowSums(props)> 0,]
+colnames(props) <- make.names(pData(res)$Annotation,unique = TRUE)
+
+
+props <- reshape2::melt(props)
+colnames(props)[1] <- c("CellType")
+props$Label <- word(props$Var2,start = 1,sep="\\.")
+props$Label <- gsub("_", " ", props$Label)
+
+
+
+#aggregate the estimates per tissue/disease type
+props <- props %>% group_by(Label,CellType) %>% summarise(meanValue=mean(value))
+
+
+# filter for figure
+props <- props %>% filter(grepl("PanCK", Label))
+props$Label <- gsub("PanCK ", "", props$Label)
+props$Label <- factor(props$Label, levels = c("LE", "Functionalis", "Basalis", "Adenomyosis"))
+
+
+cell_cols <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+"#999933", "#882255", "#661100", "#6699CC")
+
+fig3C <- ggplot(props, aes(fill=CellType, y=meanValue, x=Label)) + 
+  geom_bar(position="stack", stat="identity") +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values = cell_cols) +
+  ylab("Mean proportion") +
+  xlab("")
+
+
+write_rds(fig3C, "figures/paper/fig3C.rds")
+
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+#| output: false
+
+#prepare the cell estimate data for plotting
+props <- t(res$prop_of_nontumor)
+props <- props[ rowSums(props)> 0,]
+colnames(props) <- make.names(pData(res)$Annotation,unique = TRUE)
+
+
+props <- reshape2::melt(props)
+colnames(props)[1] <- c("CellType")
+props$Label <- word(props$Var2,start = 1,sep="\\.")
+props$Label <- gsub("_", " ", props$Label)
+
+
+#aggregate the estimates per tissue/disease type
+props <- props %>% group_by(Label,CellType) %>% summarise(meanValue=mean(value))
+
+
+# filter for figure
+props <- props %>% filter(grepl("Stroma", Label))
+props$Label <- gsub("Stroma ", "", props$Label)
+props$Label <- gsub("Myometrium near adeno", "Myo 2", gsub("Myometrium near endo", "Myo 1", props$Label))
+props$Label <- factor(props$Label, levels = c("Functionalis", "Basalis", "Adenomyosis", "Myo 1", "Myo 2"))
+
+
+cell_cols <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+"#999933", "#882255", "#661100", "#6699CC")
+
+fig2B <- ggplot(props, aes(fill=CellType, y=meanValue, x=Label)) + 
+  geom_bar(position="stack", stat="identity") +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values = cell_cols) +
+  ylab("Mean proportion") +
+  xlab("")
+
+
+write_rds(fig2B, "figures/paper/fig2B.rds")
+
+```
+
+```{r}
+
+pheno <- pData(res)
+
+results_props <- data.frame(res$prop_of_nontumor)
+results_props$annotation <- pheno$annotation
+write.csv(results_props, "results/deconv/fine_cell_props.csv")
+
+results_betas <- data.frame(res$beta)
+results_betas$annotation <- pheno$annotation
+write.csv(results_betas, "results/deconv/fine_cell_betas.csv")
+
+
+write_rds(res, "results/deconv/fine_cell_res.rds")
+
+```
+
+
+## Deconvolute using immune annotations
+
+### Heatmaps
+
+```{r}
+custom_mtx <- readRDS(file="data/endometrium_immune_auto.RDS")
+
+target_spatialData_immune <- target_spatialData[ , pData(target_spatialData)$segment %in% c("CD45", "PanCK")]
+
+res <- runspatialdecon(object = target_spatialData_immune,
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = custom_mtx,
+                      align_genes = TRUE)
+
+dat <- t(res$beta)
+#dat <- t(res$prop_of_nontumor)
+colnames(dat) <- row.names(pData(target_spatialData_immune))
+
+dat <- dat[ rowSums(dat)>0,]
+
+column_ha = HeatmapAnnotation(df = pData(target_spatialData_immune)[, c("segment", "region")], col=list(region = project_palettes$region_colours, segment = project_palettes$segment_colours))
+
+col_fun = circlize::colorRamp2(c(-1, 0, 200), c("#6D9EC1", "white", "firebrick3"))
+p <- Heatmap(dat, name="beta" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+
+png("figures/deconv/CellTypeHeatmap_immune.png",width = 7,height=4,res=600,units="in")
+p
+dev.off()
+p
+
+
+```
+
+### Proportion barcharts
+
+```{r}
+
+#prepare the cell estimate data for plotting
+props <- t(res$prop_of_nontumor)
+props <- props[ rowSums(props)> 0,]
+colnames(props) <- make.names(pData(res)$Annotation,unique = TRUE)
+#p <- Heatmap(dat, name="prop" ,show_column_names = FALSE, top_annotation=column_ha,col = col_fun)
+#o = hclust(dist(t(props)))$order
+#props <- props[,o]
+
+
+props <- reshape2::melt(props)
+colnames(props)[1] <- c("CellType")
+props$Label <- word(props$Var2,start = 1,sep="\\.")
+props$Label <- gsub("_", " ", props$Label)
+props <- props %>% filter(!grepl('LE', Label))
+#props$Label <- factor(props$Label, levels = c("CD45 Adenomyosis", "CD45 Basalis", "CD45 Functionalis", "PanCK Adenomyosis", "PanCK Basalis", "PanCK Functionalis"))
+
+#aggregate the estimates per tissue/disease type
+props <- props %>% group_by(Label,CellType) %>% summarise(meanValue=mean(value))
+props <- props %>% filter(grepl("CD45", Label))
+props$Label <- gsub("CD45 ", "", props$Label)
+props$Label <- paste0(props$Label, " CD45")
+
+props$Label <- factor(props$Label, levels = c("Functionalis CD45", "Basalis CD45", "Adenomyosis CD45"))
+
+cell_colours <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3") %>% magrittr::set_names(as.character(unique(props$CellType)))
+
+g <- ggplot(props, aes(fill=CellType, y=meanValue, x=Label)) + 
+  geom_bar(position="stack", stat="identity") +
+  cowplot::theme_cowplot()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_manual(values = cell_colours) +
+  ylab("Mean proportion") +
+  xlab("")
+
+g
+
+cowplot::save_plot("figures/deconv/immunecellProp.png",g,base_height = 5,base_width = 6,bg="white")
+
+
+write_rds(g, "figures/paper/fig5B.rds")
+
+
+```
+
+```{r}
+
+pheno <- pData(res)
+
+results_props <- data.frame(res$prop_of_nontumor)
+results_props$annotation <- pheno$annotation
+write.csv(results_props, "results/deconv/immune_cell_props.csv")
+
+results_betas <- data.frame(res$beta)
+results_betas$annotation <- pheno$annotation
+write.csv(results_betas, "results/deconv/immune_cell_betas.csv")
+
+
+```
+
+
+# Differential cell abundance analysis
+
+## Broad annotations
+
+```{r}
+
+# Read in proportion data and remove annotation column
+broad_cell_props <- read.csv("results/deconv/broad_cell_props.csv", row.names = 1)
+broad_cell_props <- t(broad_cell_props[,-7])
+
+# Extract pheno data
+pheno <- pData(target_spatialData) %>% dplyr::select("Sample ID", "Annotation", "region", "segment") 
+pheno$sample_id <- gsub(" |-", "_", pheno$`Sample ID`)
+
+
+broad_cell_props <- broad_cell_props[ ,row.names(pheno)] %>% na.omit()
+
+# Create propslist for use with 'propeller' tool from 'speckle' package
+broad_propslist <- convertDataToList(broad_cell_props, data.type="proportions", transform="asin",scale.fac=pheno$nuclei_count)
+
+# Create design matrix as in DE analysis
+design  <- model.matrix( ~ 0 + Annotation + sample_id, pheno)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts_vector <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts_vector <- gsub("Annotation", "", contrasts_vector)
+ 
+## Note: contrasts vector can't be passed to makeContrasts in limma package as previously
+## propeller:ttest only allows for one contrast to be made at a time, so was wrapped in helper function 'proportionDEanalysis' 
+## outs <- propeller.ttest(broad_propslist, design, contrast.matrix, robust=TRUE,trend=FALSE, sort=TRUE)
+
+
+# Carry out DE proportion analysis
+broad_proportion_res <- map(contrasts_vector,
+                               proportionDEanalysis,
+                               broad_propslist,
+                               design) 
+
+# Rename list of results to match contrasts
+names(broad_proportion_res) <- contrasts_vector
+names(broad_proportion_res)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+
+
+# Shorten names (for write.xlsx) and save
+broad_proportion_res_short_names <- broad_proportion_res
+names(broad_proportion_res_short_names) <- str_trunc(names(broad_proportion_res_short_names), 31, "right")
+
+openxlsx::write.xlsx(broad_proportion_res_short_names, file = "results/deconv/broad_cell_deconv_differential_proportion_analysis.xlsx", rowNames = TRUE)
+
+
+```
+
+### Summary and violin plot
+
+```{r}
+
+colnames <- c("PropMean_Condition","PropMean_Control","PropRatio", "Tstatistic", "P.Value", "FDR") 
+
+broad_proportion_res_summary <- broad_proportion_res[1:16] %>% map(setNames, colnames)
+
+broad_proportion_res_summary <- do.call(rbind, broad_proportion_res_summary) %>%
+  mutate(Comparison = gsub("\\..*","", row.names(.)),
+         Cell_type = gsub("^[^.]+.","", row.names(.))) %>% 
+  arrange(FDR) %>% 
+  filter(FDR < 0.05)
+
+
+pheno$sample <- row.names(pheno)
+
+cell_colours <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+                  "#999933", "#882255", "#661100", "#6699CC") %>% magrittr::set_names(as.character(row.names(broad_cell_props)))
+
+
+broad_violins <- broad_cell_props[unique(broad_proportion_res_summary$Cell_type),] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  left_join(pheno, by = c("samples"="sample")) %>%
+  mutate(region = factor(.$region, levels = c("Adenomyosis", "Basalis", "Functionalis", "LE", "Myometrium_near_adeno", "Myometrium_near_endo"))) %>%
+  ggplot(aes(region, prop, fill = CellTypes)) +
+  geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.12, alpha = 1, na.rm = TRUE)+
+  facet_grid(segment ~CellTypes, scales = "free") +
+  theme_bw() +
+  scale_fill_manual(values=cell_colours) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(angle = 40,  hjust=1))+
+  ylab("Proportion")
+
+
+cowplot::save_plot("figures/deconv/DE_broadcellProp_violins.png",
+                   broad_violins,
+                   base_height = 6.5,
+                   base_width = 10,
+                   bg="white")
+
+
+
+```
+
+## Fine annotations
+
+```{r}
+
+# Read in proportion data and remove annotation column
+fine_cell_props <- read.csv("results/deconv/fine_cell_props.csv", row.names = 1)
+fine_cell_props <- t(fine_cell_props[,-16])
+fine_cell_props <- fine_cell_props[-8,]
+
+# Extract pheno data
+# Extract pheno data
+pheno <- pData(target_spatialData) %>% dplyr::select("Sample ID", "Annotation", "region", "segment") 
+pheno$sample_id <- gsub(" |-", "_", pheno$`Sample ID`)
+
+
+fine_cell_props <- fine_cell_props[ ,row.names(pheno)] %>% na.omit()
+
+# Create propslist for use with 'propeller' tool from 'speckle' package
+fine_propslist <- convertDataToList(fine_cell_props, data.type="proportions", transform="asin",scale.fac=pheno$nuclei_count)
+
+# Create design matrix as in DE analysis
+design  <- model.matrix( ~ 0 + Annotation + sample_id, pheno)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts_vector <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts_vector <- gsub("Annotation", "", contrasts_vector)
+
+## Note: contrasts vector can't be passed to makeContrasts in limma package as previously
+## propeller:ttest only allows for one contrast to be made at a time, so was wrapped in helper function 'proportionDEanalysis' 
+## outs <- propeller.ttest(fine_propslist, design, contrast.matrix, robust=TRUE,trend=FALSE, sort=TRUE)
+
+# Carry out DE proportion analysis
+fine_proportion_res <- map(contrasts_vector,
+                            proportionDEanalysis,
+                            fine_propslist,
+                            design) 
+
+# Rename list of results to match contrasts
+names(fine_proportion_res) <- contrasts_vector
+names(fine_proportion_res)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+
+
+# Shorten names (for write.xlsx) and save
+fine_proportion_res_short_names <- fine_proportion_res
+names(fine_proportion_res_short_names) <- str_trunc(names(fine_proportion_res_short_names), 31, "right")
+
+openxlsx::write.xlsx(fine_proportion_res_short_names, file = "results/deconv/fine_cell_deconv_differential_proportion_analysis.xlsx", rowNames = TRUE)
+
+
+
+```
+
+### Summary and violin plots
+
+```{r}
+
+colnames <- c("PropMean_Condition","PropMean_Control","PropRatio", "Tstatistic", "P.Value", "FDR") 
+
+fine_proportion_res_summary <- fine_proportion_res[1:16] %>% map(setNames, colnames)
+
+fine_proportion_res_summary <- do.call(rbind, fine_proportion_res_summary) %>%
+  mutate(Comparison = gsub("\\..*","", row.names(.)),
+         Cell_type = gsub("^[^.]+.","", row.names(.))) %>% 
+  arrange(FDR) %>% 
+  filter(FDR < 0.05)
+
+
+pheno$sample <- row.names(pheno)
+
+cell_colours <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3", "#855C75", "#D9AF6B", "#AF6458", "#DDCC77", "#44AA99", 
+"#999933", "#882255", "#661100", "#6699CC") %>% magrittr::set_names(as.character(row.names(fine_cell_props)))
+
+
+fine_violins <- fine_cell_props[unique(fine_proportion_res_summary$Cell_type),] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  left_join(pheno, by = c("samples"="sample")) %>%
+  mutate(region = factor(.$region, levels = c("Adenomyosis", "Basalis", "Functionalis", "LE", "Myometrium_near_adeno", "Myometrium_near_endo"))) %>%
+  ggplot(aes(region, prop, fill = CellTypes)) +
+  geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.12, alpha = 1, na.rm = TRUE)+
+  facet_grid(segment ~CellTypes, scales = "free") +
+  theme_bw() +
+  scale_fill_manual(values=cell_colours) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x = element_text(angle = 40,  hjust=1))+
+  ylab("Proportion")
+
+
+cowplot::save_plot("figures/deconv/DE_finecellProp_violins.png",
+                   fine_violins,
+                   base_height = 6.5,
+                   base_width = 12,
+                   bg="white")
+
+```
+
+## Immune annotations
+
+```{r}
+
+# Read in proportion data and remove annotation column
+immune_cell_props <- read.csv("results/deconv/immune_cell_props.csv", row.names = 1)
+immune_cell_props <- t(immune_cell_props[,-10])
+
+# Extract pheno data for immune segment (CD45)
+target_spatialData_immune <- target_spatialData[ , pData(target_spatialData)$segment %in% c("CD45", "PanCK")]
+immune_pheno <- pData(target_spatialData_immune) %>% dplyr::select("Sample ID", "Annotation", "region", "segment") 
+immune_pheno$sample_id <- gsub(" |-", "_", immune_pheno$`Sample ID`)
+
+immune_cell_props <- immune_cell_props[ ,row.names(immune_pheno)] %>% na.omit()
+
+
+# Create propslist for use with 'propeller' tool from 'speckle' package
+immune_propslist <- convertDataToList(immune_cell_props, data.type="proportions", transform="asin",scale.fac=immune_pheno$nuclei_count)
+
+# Create design matrix as in DE analysis
+design  <- model.matrix( ~ 0 + Annotation + sample_id, immune_pheno)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups_Immune.txt")
+contrasts_vector <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts_vector <- gsub("Annotation", "", contrasts_vector)
+ 
+## Note: contrasts vector can't be passed to makeContrasts in limma package as previously
+## propeller:ttest only allows for one contrast to be made at a time, so was wrapped in helper function 'proportionDEanalysis' 
+## outs <- propeller.ttest(immune_propslist, design, contrast.matrix, robust=TRUE,trend=FALSE, sort=TRUE)
+
+immune_proportion_res <- map(contrasts_vector,
+                               proportionDEanalysis,
+                               immune_propslist,
+                               design) 
+
+names(immune_proportion_res) <- contrasts_vector
+
+
+# Shorten names (for write.xlsx) and save
+immune_proportion_res_short_names <- immune_proportion_res
+names(immune_proportion_res_short_names) <- str_trunc(names(immune_proportion_res_short_names), 31, "right")
+
+openxlsx::write.xlsx(immune_proportion_res_short_names, file = "results/deconv/immune_cell_deconv_differential_proportion_analysis.xlsx", rowNames = TRUE)
+
+```
+
+### Summary and violin plot
+
+```{r}
+
+colnames <- c("PropMean_Condition","PropMean_Control","PropRatio", "Tstatistic", "P.Value", "FDR") 
+
+immune_proportion_res_summary <- immune_proportion_res %>% map(setNames, colnames)
+
+immune_proportion_res_summary <- do.call(rbind, immune_proportion_res_summary) %>%
+  mutate(Comparison = gsub("\\..*","", row.names(.)),
+         Cell_type = gsub("^[^.]+.","", row.names(.))) %>% 
+  arrange(FDR) %>% 
+  filter(FDR < 0.05)
+
+
+immune_pheno$sample <- row.names(immune_pheno)
+
+cell_colours <- c("#89C75F",  "#568546", "#FFB8AC", "#eb7175", "#ab4d7c", "#ebaed0", "#f5d5e7", "#a4c6eb", "#3e6fa3") %>% magrittr::set_names(as.character(row.names(immune_cell_props)))
+
+#immune_cell_props[unique(immune_proportion_res_summary$Cell_type),] %>%
+immune_violins <- immune_cell_props[unique(immune_proportion_res_summary$Cell_type),] %>%
+  as.data.frame() %>%
+  rownames_to_column("CellTypes") %>%
+  gather(samples, prop, -CellTypes) %>%
+  left_join(immune_pheno, by = c("samples"="sample")) %>%
+  filter(!grepl("PanCK", segment)) %>%
+  mutate(region = factor(.$region, levels = c("Functionalis", "Basalis", "Adenomyosis"))) %>%
+  ggplot(aes(region, prop, fill = CellTypes)) +
+  geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.12, alpha = 1, na.rm = TRUE)+
+  facet_wrap(~CellTypes, scales = "free", ncol = 3) +
+  theme_bw() +
+  scale_fill_manual(values=cell_colours) +
+  theme(axis.title.x=element_blank(),
+          axis.text.x = element_text(angle = 40,  hjust=1))+
+  ylab("Proportion") +
+  theme(legend.position = "none")
+
+
+cowplot::save_plot("figures/deconv/DE_immunecellProp_violins.png",
+                   immune_violins,
+                   base_height = 6,
+                   base_width = 7,
+                   bg="white")
+
+
+write_rds(immune_violins, "figures/paper/fig5A.rds")
+
+```
+

@@ -1,0 +1,1789 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Differential expression"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+bibliography: references.bib
+---
+
+# Differential expression analysis
+
+This notebook uses various approaches to perform differential expression analysis to identify genes that are significantly altered between regions for the different cell types. We employed count based counts and statistical models relying on the underlying data having a normal distribution. The former used the processed counts from notebook '02_GeoDiff_processing.qmd' and the latter used the normalised data generated in notebook '03_normaliation.qmd'. Broadly these could be considered NB-GLMMs or LMMs. All models treat patient as a random effect.
+
+The best methods to analyse spatial transcriptomic data have yet to be determined. However, these methods have been extensively benchmarked in single-cell data:
+
+-   https://www.sc-best-practices.org/conditions/differential_gene_expression.html#id325
+
+-   https://www.biostars.org/p/439774/
+
+These benchmarking studies suggest NB-GLMMs can result in false positives. To summarise the results below, the limma-trend model with the data normalised by the GeoDiff seemed to perform the best. The GeoDiff NB-GLMM had many differentially expressed genes by these did not demonstrate great overlap with other methods.
+
+All in all see section limma > geodiff normalised data for the code for the final model that was employed in downstream analysis. 
+
+## Load libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(factoextra)
+library(reshape2)
+library(pheatmap)
+library(writexl)
+library(ggrepel)
+library(edgeR)
+library(limma)
+library(statmod)
+library(variancePartition)
+library(GeoDiff)
+library(janitor)
+library(VennDiagram)
+library(cowplot)
+library(doParallel)
+library(lme4)
+library(RColorBrewer)
+library(wesanderson)
+library(randomcoloR)
+library(SummarizedExperiment)
+source("src/utilityFunctions.R")
+source("src/ArchRpalettes.R") # additional colour palettes
+```
+
+## Load the normalised data
+
+```{r}
+
+target_spatial_data <- readRDS("results/normalised_spatial_data.RDS")
+target_spatial_data_geoDiff  <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+spatial_data_geoDiff <- readRDS("results/GeoDiff_spatial_data.RDS")
+TMM_norm_data <- readRDS("results/TMM_normalised_spatial_data.RDS")
+RUVseq_norm_data <- readRDS("results/RUVseq_normalised_spatial_data.RDS")
+
+#set the cores to use
+#cores <- 12
+#registerDoParallel(cores=cores)
+
+```
+
+# DE genes between regions
+
+In these models we use patient as the random effect rather than slide as patient and slide are confounded.
+
+```{r}
+
+pData <- pData(target_spatial_data_geoDiff )
+table(pData$`slide name`, pData$`Sample ID`)
+
+```
+
+```{r}
+
+table(pData$`slide name`, pData$region)
+
+```
+
+```{r}
+
+table(pData$`slide name`, pData$Annotation)
+
+```
+
+
+```{r}
+
+table(pData$segment, pData$region)
+
+```
+
+```{r}
+
+table(pData$`Sample ID`, pData$region, pData$segment)
+
+```
+
+
+## Dream
+
+### Starting from GeoDiff processed counts
+
+```{r}
+#| eval: true
+#| echo: true
+
+mat <- spatial_data_geoDiff@assayData$exprs
+mat <- na.omit(mat)
+
+# Pheno
+pheno <- pData(spatial_data_geoDiff)
+pheno$Annotation <- gsub(" ", "_", pheno$Annotation)
+
+```
+
+```{r}
+#| eval: false
+
+# Effective library size
+y <- DGEList(counts=mat)
+y <- calcNormFactors(y)
+
+
+# Specify the formula with patient as a random effect and the combined region_celltype factor as a fixed effect
+form <- ~ 0 + Annotation +(1|`Sample ID`)
+
+
+# Contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+
+
+L <- makeContrastsDream(form, pheno, 
+  contrasts = contrasts)
+
+# Visualize contrast matrix
+plotContrasts(L) 
+
+param <- MulticoreParam(workers = cores)
+# Estimate weights using linear mixed model of dream
+vobjDream <- voomWithDreamWeights(y, form, pheno, BPPARAM=param)
+
+# Fit dream model with contrasts
+fit <- dream(vobjDream, form, pheno, L)
+fit <- eBayes(fit)
+
+dream_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit, 
+            x, contrastTable[x, 2], contrastTable[x, 3]))
+names(dream_results_table) <- contrasts
+names(dream_results_table) <- gsub("Annotation", "", names(dream_results_table))
+
+
+# Save results table
+saveRDS(dream_results_table,file="results/differential_expression/dream_results.RDS")
+
+#dream_res_summary <- data.frame(summary(decideTests(fit)))
+#dream_res_summary <- reshape2::dcast(as.data.frame(dream_res_summary), Var2 ~ Var1, value.var="Freq")
+#write.csv(dream_res_summary, "./results/differential_expression/dream_res_summary_geodiff.csv")
+
+```
+
+```{r}
+
+# Read in results
+dream_results_table <- readRDS("results/differential_expression/dream_results.RDS")
+
+```
+
+#### Results summary
+
+```{r}
+
+dream_DE_res <- DEResPlot(dream_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+dream_DE_res[[1]]
+
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_dream.png",
+  plot = dream_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(dream_results_table)))
+
+
+volcano_plots <- dream_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_dream.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- dream_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+volcano_plots
+
+```
+
+```{r}
+
+volcano_plots_LE <- dream_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_dream.png",base_height = 5,base_width = 15,bg="white")
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+dream_DE_genes <- do.call(rbind, dream_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+dream_DE_genes <- unique(dream_DE_genes[dream_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+```
+
+#### PCA with DE genes
+
+```{r}
+#| warning: false
+#| message: false
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+dream_DE_genes <- dream_DE_genes[dream_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[dream_DE_genes,]
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+# Colour palettes for column annotations
+set.seed(123)
+annotation_colours <- distinctColorPalette(15)
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+patient_colours <- c("#7FC97F", "#BEAED4", "#FDC086", "#FFFF99", "#386CB0", "#F0027F", "#8DD3C7", "#7570B3", "#ffabd5", "#FB8072")
+
+
+
+# Create plots
+p1 <- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = annotation_colours,
+        colour.data=factor(pheno$Annotation),
+        shape.data=factor(pheno$segment),
+        colour.lab="Annotation",
+        sample.lab=F
+        )
+
+
+p2 <- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = region_colours,
+        colour.data=factor(pheno$region),
+        shape.data=factor(pheno$segment),
+        colour.lab="Region",
+        sample.lab=F
+        )
+
+
+p3<- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = segment_colours,
+        colour.data=factor(pheno$segment),
+        colour.lab="Segment",
+        sample.lab=F
+        )
+
+# Save plots
+PCA_res <- plot_grid(plotlist = list(p1, p2, p3), ncol = 3)
+save_plot(plot = PCA_res, filename = "figures/differential_expression/dream_PCA_res2.png",base_height = 5.5,base_width = 20,bg="white")
+
+PCA_res
+
+```
+
+#### Heatmap of DE genes
+
+```{r}
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+dream_DE_genes <- dream_DE_genes[dream_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[dream_DE_genes,]
+
+
+# Colour palettes for column annotations
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+names(region_colours) <- sort(unique(pheno$region))
+
+segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+names(segment_colours) <- sort(unique(pheno$segment))
+
+patient_colours <- c(colorRampPalette(brewer.pal(6, "Accent"))(6), colorRampPalette(brewer.pal(4, "Set3"))(4))
+patient_colours[8] <- "#7570B3"
+patient_colours[9] <- "#ffabd5"
+names(patient_colours) <- sort(unique(pheno$`Sample ID`))
+
+
+anno_cols<-list(Region = region_colours,
+                Segment = segment_colours,
+                Patient = patient_colours)
+
+
+# Column annotations
+column_annotation <- data.frame(Region = as.character(pheno$region),
+           Segment = as.character(pheno$segment),
+           Patient = as.character(pheno$`Sample ID`),
+           row.names = row.names(pheno))
+
+
+heatmap_cols <- colorRampPalette(ArchRPalettes$coolwarm)(50)
+#heatmap_cols <- colorRampPalette(brewer.pal(11,"RdBu"))(50)
+
+# Plot heatmap 
+dream_DE_heatmap <-pheatmap(normalisedData,
+                                    scale = "row",
+                                    show_rownames=FALSE,
+                                    show_colnames =FALSE,
+                                    annotation_col = column_annotation,
+                                    annotation_colors = anno_cols,
+                                    color=heatmap_cols)
+
+
+
+# Save heatmap
+ggsave(
+  filename = "figures/differential_expression/dream_heatmap.pdf",
+  plot = dream_DE_heatmap[[4]],
+  width = 9,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+## Limma (with duplicate correlation where relevant)
+
+### TMM normalised data - nanostring tools processed counts
+
+Have since realised the original 'Q3' version of this analysis is the same as the TMM normalisation. There were subtle differences despite starting from the same counts - I can't quite figure out why yet. Regardless, use the TMM and true Q3 norm results.
+
+```{r}
+#| echo: true
+#| eval: true
+
+# Check for overdispersion
+d <- DGEList(target_spatial_data@assayData$exprs)
+d <- estimateCommonDisp(d)
+
+png("figures/differential_expression/NanostringNCTools_TMM_overDispersion.png")
+plotMeanVar(d, show.raw.vars = TRUE, show.ave.raw.vars = FALSE, NBline = TRUE)
+legend("topleft", legend = c("Poisson", "Negative Binomial"), fill = c("black", "dodgerblue"), border = c("black", "dodgerblue"), bty = "n")
+dev.off()
+
+
+# Model design
+design  <- model.matrix( ~ 0 + Annotation, pData(target_spatial_data))
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+# Estimate size factors
+countData <- calcNormFactors(d)
+
+# Run voom the first time
+vobj_tmp <- voom(countData, design, plot=FALSE)
+dupcor <- duplicateCorrelation(vobj_tmp,design,block=pData(target_spatial_data)$`Sample ID`)
+
+# Run voom again considering the duplicateCorrelation results
+vobj <- voom(countData, design, plot=TRUE, block=pData(target_spatial_data)$`Sample ID`, correlation=dupcor$consensus)
+
+
+# Estimate duplicateCorrelation again
+dupcor <- duplicateCorrelation(vobj, design, block=pData(target_spatial_data)$`Sample ID`)
+
+# Estimate linear mixed model with a single variance component
+fitDupCor <- lmFit(vobj, design, block=pData(target_spatial_data)$`Sample ID`, correlation=dupcor$consensus)
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+
+# Get results
+limma_TMM_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+                                                                                       x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(limma_TMM_results_table) <- colnames(contrast.matrix)
+
+TMM_res_summary <- data.frame(summary(decideTests(fit2)))
+TMM_res_summary <- reshape2::dcast(as.data.frame(TMM_res_summary ), Var2 ~ Var1, value.var="Freq")
+write.csv(TMM_res_summary, "./results/differential_expression/limma_TMM_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (TMM)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_TMM_DE_res <- DEResPlot(limma_TMM_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_TMM_DE_res[[1]]
+
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_limma_TMM_NanostringNCTools2.png",
+  plot = limma_TMM_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+               gsub('-', ' - ',
+                    names(limma_TMM_results_table)))
+
+
+volcano_plots <- limma_TMM_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_limma_TMM2.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- limma_TMM_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- limma_TMM_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_limma_TMM.png",base_height = 5,base_width = 15,bg="white")
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_TMM_DE_genes <- do.call(rbind, limma_TMM_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_TMM_DE_genes <- unique(limma_TMM_DE_genes[limma_TMM_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+
+```
+
+### TMM normalised data - GeoDiff processed counts
+
+```{r}
+#| echo: true
+#| eval: true
+
+#check for overdispersion
+d <- DGEList(na.omit(spatial_data_geoDiff@assayData$exprs))
+d <- estimateCommonDisp(d)
+
+png("figures/differential_expression/GeoDiff_TMM_overDispersion.png")
+plotMeanVar(d, show.raw.vars = TRUE, show.ave.raw.vars = FALSE, NBline = TRUE)
+legend("topleft", legend = c("Poisson", "Negative Binomial"), fill = c("black", "dodgerblue"), border = c("black", "dodgerblue"), bty = "n")
+dev.off()
+
+
+# Model design
+design  <- model.matrix( ~ 0 + Annotation, pData(spatial_data_geoDiff))
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+# Estimate size factors
+countData <- calcNormFactors(d)
+
+# Run voom the first time
+vobj_tmp <- voom(countData, design, plot=FALSE)
+dupcor <- duplicateCorrelation(vobj_tmp,design,block=pData(spatial_data_geoDiff)$`Sample ID`)
+
+# Run voom again considering the duplicateCorrelation results
+vobj <- voom(countData, design, plot=TRUE, block=pData(spatial_data_geoDiff)$`Sample ID`, correlation=dupcor$consensus)
+
+# Estimate duplicateCorrelation again
+dupcor <- duplicateCorrelation(vobj, design, block=pData(spatial_data_geoDiff)$`Sample ID`)
+
+# Estimate linear mixed model with a single variance component
+fitDupCor <- lmFit(vobj, design, block=pData(spatial_data_geoDiff)$`Sample ID`, correlation=dupcor$consensus)
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+
+# Get results
+limma_TMM_GeoDiff_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+                                                                                       x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(limma_TMM_GeoDiff_results_table) <- colnames(contrast.matrix)
+
+TMM_GeoDiff_res_summary <- data.frame(summary(decideTests(fit2)))
+TMM_GeoDiff_res_summary <- reshape2::dcast(as.data.frame(TMM_GeoDiff_res_summary ), Var2 ~ Var1, value.var="Freq")
+write.csv(TMM_GeoDiff_res_summary, "./results/differential_expression/limma_TMM-GeoDiff_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (TMM - GeoDiff processed counts)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_TMM_GeoDiff_DE_res <- DEResPlot(limma_TMM_GeoDiff_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_TMM_GeoDiff_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_limma_TMM_GeoDiff.png",
+  plot = limma_TMM_GeoDiff_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+               gsub('-', ' - ',
+                    names(limma_TMM_GeoDiff_results_table)))
+
+
+volcano_plots <- limma_TMM_GeoDiff_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_limma_TMM_GeoDiff.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- limma_TMM_GeoDiff_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- limma_TMM_GeoDiff_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_limma_TMM_GeoDiff.png",base_height = 5,base_width = 15,bg="white")
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_TMM_GeoDiff_DE_genes <- do.call(rbind, limma_TMM_GeoDiff_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_TMM_GeoDiff_DE_genes <- unique(limma_TMM_GeoDiff_DE_genes[limma_TMM_GeoDiff_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+
+```
+
+### RUVseq normalised data
+
+```{r}
+
+# Extract pheno data
+normalisedData <- SummarizedExperiment::assay(RUVseq_norm_data)
+pData <- data.frame(RUVseq_norm_data@colData@listData)
+
+
+# Design
+design  <- model.matrix( ~ 0 + Annotation, pData)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit <- lmFit(normalisedData, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+
+limma_RUVseq_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+            x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(limma_RUVseq_results_table) <- colnames(contrast.matrix)
+
+RUVseq_res_summary <- data.frame(summary(decideTests(fit2)))
+RUVseq_res_summary <- reshape2::dcast(as.data.frame(RUVseq_res_summary), Var2 ~ Var1, value.var="Freq")
+write.csv(RUVseq_res_summary, "./results/differential_expression/limma_RUVseq_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (RUVseq)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_RUVseq_DE_res <- DEResPlot(limma_RUVseq_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_RUVseq_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_limma_RUVseq.png",
+  plot = limma_RUVseq_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_RUVseq_DE_genes <- do.call(rbind, limma_RUVseq_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_RUVseq_DE_genes <- unique(limma_RUVseq_DE_genes[limma_RUVseq_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+```
+
+### Q3 normalised data
+
+```{r}
+#| echo: true
+#| eval: true
+
+# Estimate linear mixed model with a single variance component
+# Fit the model for each gene, 
+mat <- target_spatial_data@assayData$q_norm
+mat <- na.omit(mat)
+mat <- log2(mat)
+
+design  <- model.matrix( ~ 0 + Annotation, pData(target_spatial_data))
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+dupcor <- duplicateCorrelation(mat, design, block=pData(target_spatial_data)$`Sample ID`)
+
+# This step uses only the genome-wide average for the random effect
+fitDupCor <- lmFit(mat, design, block=pData(target_spatial_data)$`Sample ID`, correlation=dupcor$consensus)
+
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2,trend = TRUE)
+
+
+# Generate results 
+limma_Q3_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+                                                                                            x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(limma_Q3_results_table) <- colnames(contrast.matrix)
+
+Q3_res_summary <- data.frame(summary(decideTests(fit2)))
+Q3_res_summary <- reshape2::dcast(as.data.frame(Q3_res_summary), Var2 ~ Var1, value.var="Freq")
+write.csv(Q3_res_summary, "./results/differential_expression/limma_Q3_res_summary.csv")
+
+summary(decideTests(fit2))
+
+plotSA(fit2, main="Final model: Mean-variance trend (Q3 norm)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_Q3_DE_res <- DEResPlot(limma_Q3_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_Q3_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_limma_Q3.png",
+  plot = limma_Q3_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(limma_Q3_results_table)))
+
+
+volcano_plots <- limma_Q3_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_limma_Q3.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- limma_Q3_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- limma_Q3_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_limma_Q3.png",base_height = 5,base_width = 15,bg="white")
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_Q3_DE_genes <- do.call(rbind, limma_Q3_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_Q3_DE_genes <- unique(limma_Q3_DE_genes[limma_Q3_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+```
+
+### GeoDiff normalised data
+
+```{r}
+#| echo: true
+#| eval: true
+
+# Estimate linear mixed model with a single variance component
+# Fit the model for each gene, 
+mat <- target_spatial_data_geoDiff @assayData$normmat
+mat <- na.omit(mat)
+
+design  <- model.matrix( ~ 0 + Annotation, pData(target_spatial_data_geoDiff ))
+colnames(design) <- gsub("Annotation", "", colnames(design))
+#colnames(design) <- make_clean_names(colnames(design))
+
+dupcor <- duplicateCorrelation(mat, design, block=pData(target_spatial_data_geoDiff )$`Sample ID`)
+
+# This step uses only the genome-wide average for the random effect
+fitDupCor <- lmFit(mat, design, block=pData(target_spatial_data_geoDiff )$`Sample ID`, correlation=dupcor$consensus)
+
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2,trend = TRUE)
+
+
+limma_GeoDiff_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+            x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(limma_GeoDiff_results_table) <- colnames(contrast.matrix)
+
+
+# Save results
+saveRDS(limma_GeoDiff_results_table,file="results/differential_expression/limma_GeoDiff_pairwise_comparisons.RDS")
+
+limma_GeoDiff_results_table_short_names <- limma_GeoDiff_results_table
+names(limma_GeoDiff_results_table_short_names) <- str_trunc(names(limma_GeoDiff_results_table_short_names), 31, "right")
+openxlsx::write.xlsx(limma_GeoDiff_results_table_short_names, file = "./results/differential_expression/limma_GeoDiff_pairwise_comparisons.xlsx", rowNames = TRUE)
+
+
+# Summary of DE expressed genes per comparison 
+GeoDiff_res_summary <- data.frame(summary(decideTests(fit2)))
+GeoDiff_res_summary <- reshape2::dcast(as.data.frame(GeoDiff_res_summary), Var2 ~ Var1, value.var="Freq")
+write.csv(GeoDiff_res_summary, "./results/differential_expression/limma_GeoDiff_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (GeoDiff norm)")
+
+```
+
+
+```{r}
+
+cor_data <- data.frame("atanh_cor" = dupcor$atanh.correlations)
+
+icc_density <- ggplot(cor_data, aes(atanh_cor, fill=atanh_cor)) +
+    geom_density(fill="#e87d8a", color="#e87d8a", alpha=0.4) + 
+    geom_vline(aes(xintercept=mean(atanh_cor)), linetype="dashed", color="black") + 
+    ylab("Density") +
+    xlab("Gene ATANH-transformed correlation values") +
+    theme_half_open() +
+    background_grid() +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.05)))
+
+
+icc_density
+
+save_plot(plot = icc_density, filename = "figures/differential_expression/ICC_density_limma_GeoDiff.png",base_height = 3.5,base_width = 5.5, bg="white")
+
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_GeoDiff_norm_DE_res <- DEResPlot(limma_GeoDiff_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_GeoDiff_norm_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_limma_GeoDiff_norm.png",
+  plot = limma_GeoDiff_norm_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_GeoDiff_DE_genes <- do.call(rbind, limma_GeoDiff_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_GeoDiff_DE_genes <- unique(limma_GeoDiff_DE_genes[limma_GeoDiff_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(limma_GeoDiff_results_table)))
+
+
+volcano_plots <- limma_GeoDiff_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_limma_GeoDiff.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- limma_GeoDiff_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- limma_GeoDiff_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_limma_GeoDiff.png",base_height = 5.5,base_width = 15,bg="white")
+
+```
+
+```{r}
+
+volcano_plots_myometrium <- limma_GeoDiff_results_table[c(17,13)] %>% map2(c("Stroma Adenomyosis - Stroma Myometrium", "Stroma Myo near adeno - Stroma Myo near endo"), plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 2)
+
+
+save_plot(plot = volcano_plots_myometrium, filename = "figures/differential_expression/myometrium_volcano_plots_limma_GeoDiff.png",base_height = 6.5,base_width = 12,bg="white")
+
+```
+
+```{r}
+#| echo: false
+#| output: false
+#| message: false
+
+fig1A <- volcano_plots[c(4,8,3,7,1,5,2,6)] %>% plot_grid(plotlist = . ,ncol = 2)
+
+write_rds(fig1A, "figures/paper/fig1A.rds")
+
+
+fig3A <- volcano_plots[c(8,4,14)] %>% plot_grid(plotlist = . ,ncol = 3)
+
+write_rds(fig3A, "figures/paper/fig3A.rds")
+
+```
+
+#### PCA with DE genes
+
+```{r}
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff , elt = "normmat"))
+limma_GeoDiff_DE_genes <- limma_GeoDiff_DE_genes[limma_GeoDiff_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[limma_GeoDiff_DE_genes,]
+
+pheno <- pData(target_spatial_data_geoDiff)
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+# Generate colour palettes
+set.seed(123)
+pal1 <- distinctColorPalette(15)
+pal2  <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+pal3 <- wes_palette("Darjeeling1", 5, type = c("discrete"))
+pal3 <- pal3[c(1,2,3,5)]
+
+
+# Create plots
+p1 <- plotPCA(pca_res,
+              PCs=c(1,2),
+              colours = pal1,
+              colour.data=factor(pheno$Annotation),
+              shape.data=factor(pheno$segment),
+              colour.lab="Annotation",
+              sample.lab=F
+)
+
+
+p2 <- plotPCA(pca_res,
+              PCs=c(1,2),
+              colours = pal2,
+              colour.data=factor(pheno$region),
+              shape.data=factor(pheno$segment),
+              colour.lab="Region",
+              sample.lab=F
+)
+
+
+p3<- plotPCA(pca_res,
+             PCs=c(1,2),
+             colours = pal3,
+             colour.data=factor(pheno$segment),
+             colour.lab="Segment",
+             sample.lab=F
+)
+
+# Save plots
+PCA_res <- plot_grid(plotlist = list(p1, p2, p3), ncol = 3)
+save_plot(plot = PCA_res, filename = "figures/differential_expression/limma_GeoDiff_PCA_res.png",base_height = 5.5,base_width = 20,bg="white")
+
+```
+
+#### Heatmap of DE genes
+
+```{r}
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+limma_GeoDiff_DE_genes <- limma_GeoDiff_DE_genes[limma_GeoDiff_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[limma_GeoDiff_DE_genes,]
+
+
+pheno <- pData(target_spatial_data_geoDiff)
+
+
+# Colour palettes for column annotations
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+names(region_colours) <- sort(unique(pheno$region))
+
+segment_colours <- segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+names(segment_colours) <- sort(unique(pheno$segment))
+
+patient_colours <- c(colorRampPalette(brewer.pal(6, "Accent"))(6), colorRampPalette(brewer.pal(4, "Set3"))(4))
+patient_colours[8] <- "#7570B3"
+patient_colours[9] <- "#ffabd5"
+names(patient_colours) <- sort(unique(pheno$`Sample ID`))
+
+
+anno_cols<-list(Region = region_colours,
+                Segment = segment_colours,
+                Patient = patient_colours)
+
+
+# Column annotations
+column_annotation <- data.frame(Region = as.character(pheno$region),
+                                Segment = as.character(pheno$segment),
+                                Patient = as.character(pheno$`Sample ID`),
+                                row.names = row.names(pheno))
+
+
+heatmap_cols <- colorRampPalette(ArchRPalettes$coolwarm)(50)
+#heatmap_cols <- colorRampPalette(brewer.pal(11,"RdBu"))(50)
+
+# Plot heatmap 
+limma_GeoDiff_DE_heatmap <-pheatmap(normalisedData,
+                            scale = "row",
+                            show_rownames=FALSE,
+                            show_colnames =FALSE,
+                            annotation_col = column_annotation,
+                            annotation_colors = anno_cols,
+                            color=heatmap_cols)
+
+
+
+# Save heatmap
+ggsave(
+  filename = "figures/differential_expression/limma_GeoDiff_heatmap.pdf",
+  plot = limma_GeoDiff_DE_heatmap[[4]],
+  width = 9,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+
+```{r}
+library(sva)
+
+#Just stroma
+## Subset data
+pheno <- pData(target_spatial_data_geoDiff)
+mat <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+
+
+pheno_subset <- pheno %>% filter(grepl("Stroma", segment)) %>% 
+  #filter(!grepl("Myo", region)) %>% 
+  arrange(region)
+  
+mat_subset <- mat[,row.names(pheno_subset)]
+
+
+# Remove effect of patient for visualisation purposes
+mod0 <- model.matrix(~ 1, data=pheno_subset)
+corrected_data <- ComBat(dat=as.matrix(mat_subset), batch=pheno_subset$`Sample ID`, mod=mod0)
+
+# Stroma DE genes
+stroma_DE_genes <- limma_GeoDiff_results_table$`Stroma_Adenomyosis-Stroma_Functionalis` %>%
+  filter(adj.P.Val < 0.01) %>%
+  row.names()
+
+
+#stroma_DE_genes_myo <- limma_GeoDiff_results_table$`Stroma_Adenomyosis-Stroma_Myometrium` %>%
+#  filter(adj.P.Val < 0.01) %>%
+#  row.names()
+
+#stroma_DE_genes <- unique(c(stroma_DE_genes, stroma_DE_genes_myo))
+
+# DE data
+corrected_data <- corrected_data[stroma_DE_genes,]
+
+
+# Heatmap
+column_annotation <- data.frame(Region = as.character(pheno_subset$region),
+                                row.names = row.names(pheno_subset))
+
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#66A61E", "#E6AB02")
+names(region_colours) <- sort(unique(pheno_subset$region))
+
+anno_cols<-list(Region = region_colours)
+
+fig2C <-pheatmap::pheatmap(corrected_data,
+                            scale = "row",
+                            show_rownames=FALSE,
+                            show_colnames=FALSE,
+                            border_color=NA,
+                            annotation_col = column_annotation,
+                            annotation_colors = anno_cols,
+                            color=heatmap_cols)
+
+
+fig2C
+
+
+# Save heatmap
+ggsave(
+  filename = "figures/paper/figure2C_myo.pdf",
+  plot = fig2C[[4]],
+  width = 6.3,
+  height = 3.5,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+```
+
+
+## Linear mixed models
+
+### GeoDiff threshold model
+
+```{r}
+#| eval: false
+
+# Subset by high quality ROIs
+# Has already been done in previous notebooks
+ROIs_high <- sampleNames(spatial_data_geoDiff)
+
+bgMean <- notes(spatial_data_geoDiff)[["bgMean"]]
+
+
+
+# Fit NB fixed effect threshold model
+set.seed(123)
+NBthDEmod <- fitNBthDE(form = ~0 + Annotation,
+                       split = FALSE,
+                       object = spatial_data_geoDiff)
+
+
+features_all <- NBthDEmod[["features_all"]]
+
+
+# Fit NB mixed effect threshold model
+set.seed(123)
+NBthmDEmod <- fitNBthmDE(object = spatial_data_geoDiff,
+                         form = ~ 0 + Annotation +(1|`Sample ID`),
+                         ROIs_high = ROIs_high,
+                         features_all = features_all,
+                         split = FALSE,
+                         preci1=NBthDEmod$preci1,
+                         threshold_mean = bgMean,
+                         sizescale = TRUE,
+                         controlRandom=list(nu=12, nmh_e=400, thin_e=60))
+
+# Save results
+saveRDS(NBthmDEmod,file="results/differential_expression/NBthmDEmod.RDS")
+
+```
+
+```{r}
+#| eval: false
+
+# Get the results
+coefr <- coefNBth(NBthmDEmod)
+
+# Clean up names
+rownames(coefr$estimate) <- gsub(" ", "_", rownames(coefr$estimate))
+rownames(coefr$estimate) <- gsub("Annotation", "", rownames(coefr$estimate))
+
+
+# Generate contrast matrix
+# Contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(make.names(x[1]), "-", make.names(x[2])))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[17] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+                                 levels = rownames(coefr$estimate))
+
+# Pairwise comparisons
+coefr2 <- contrastNBth(NBthmDEmod,method=contrast.matrix)
+GeoDiffNB_results_table <- map(contrasts,~DENBth(object = coefr2,.x))
+names(GeoDiffNB_results_table) <- gsub("Annotation", "", colnames(contrast.matrix))
+names(GeoDiffNB_results_table)[17] <- "Functionalis-Basalis"
+
+
+# Save results
+saveRDS(GeoDiffNB_results_table,file="results/differential_expression/GeoDiffNBthmDE_pairwise_comparisons.RDS")
+
+
+# Excel version
+GeoDiffNB_results_table_short_names <- GeoDiffNB_results_table
+names(GeoDiffNB_results_table_short_names) <- str_trunc(names(GeoDiffNB_results_table_short_names), 31, "right")
+GeoDiffNB_results_table_short_names <- lapply(GeoDiffNB_results_table_short_names, function(df){arrange(df,adjp)})
+
+openxlsx::write.xlsx(GeoDiffNB_results_table_short_names, file = "./results/differential_expression/GeoDiffNBthmDE_pairwise_comparisons.xlsx", rowNames = TRUE)
+
+```
+
+
+```{r}
+
+# Read in results
+GeoDiffNB_results_table <- readRDS("results/differential_expression/GeoDiffNBthmDE_pairwise_comparisons.RDS")
+
+```
+
+#### Results summary
+
+```{r}
+
+GeoDiffNB_DE_res <- DEResPlot(GeoDiffNB_results_table[1:12], foldChangeColumn="log2FC", FDRColumn="adjp", stains=c("CD45|CD31|PanCK|Stroma"))
+
+GeoDiffNB_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/DE_summary_GeoDiffNB-GLMM.png",
+  plot = GeoDiffNB_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(GeoDiffNB_results_table)))
+
+
+volcano_plots <- GeoDiffNB_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T, foldChangeColumn="log2FC",FDRColumn="adjp") %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/region_volcano_plots_GeoDiffNBthmDE.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- GeoDiffNB_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T, foldChangeColumn="log2FC",FDRColumn="adjp") %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/LE_vs_all_volcano_plots_GeoDiffNBthmDE.png",base_height = 5,base_width = 15,bg="white")
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+GeoDiffNBthm_DE_genes <- do.call(rbind, GeoDiffNB_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+GeoDiffNBthm_DE_genes <- unique(GeoDiffNBthm_DE_genes[GeoDiffNBthm_DE_genes$adjp <0.05,]$gene_name)
+
+```
+
+#### PCA with DE genes
+
+```{r}
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+GeoDiffNBthm_DE_genes <- GeoDiffNBthm_DE_genes[GeoDiffNBthm_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[GeoDiffNBthm_DE_genes,]
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+# Generate colour palettes
+set.seed(123)
+pal1 <- distinctColorPalette(15)
+pal2  <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+pal3 <- segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+pal3 <- pal3[c(1,2,3,5)]
+
+
+# Create plots
+p1 <- plotPCA(pca_res,
+              PCs=c(1,2),
+              colours = pal1,
+              colour.data=factor(pheno$Annotation),
+              shape.data=factor(pheno$segment),
+              colour.lab="Annotation",
+              sample.lab=F
+)
+
+
+p2 <- plotPCA(pca_res,
+              PCs=c(1,2),
+              colours = pal2,
+              colour.data=factor(pheno$region),
+              shape.data=factor(pheno$segment),
+              colour.lab="Region",
+              sample.lab=F
+)
+
+
+p3<- plotPCA(pca_res,
+             PCs=c(1,2),
+             colours = pal3,
+             colour.data=factor(pheno$segment),
+             colour.lab="Segment",
+             sample.lab=F
+)
+
+# Save plots
+PCA_res <- plot_grid(plotlist = list(p1, p2, p3), ncol = 3)
+save_plot(plot = PCA_res, filename = "figures/differential_expression/GeoDiffNBthm_PCA_res.png",base_height = 5.5,base_width = 20,bg="white")
+
+```
+
+#### Heatmap of DE genes
+
+```{r}
+
+# Subset data by DE genes
+normalisedData <- na.omit(assayDataElement(target_spatial_data_geoDiff, elt = "normmat"))
+GeoDiffNBthm_DE_genes <- GeoDiffNBthm_DE_genes[GeoDiffNBthm_DE_genes %in% row.names(normalisedData )]
+normalisedData <- normalisedData[GeoDiffNBthm_DE_genes,]
+
+
+# Colour palettes for column annotations
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+names(region_colours) <- sort(unique(pheno$region))
+
+segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+names(segment_colours) <- sort(unique(pheno$segment))
+
+patient_colours <- c(colorRampPalette(brewer.pal(6, "Accent"))(6), colorRampPalette(brewer.pal(4, "Set3"))(4))
+patient_colours[8] <- "#7570B3"
+patient_colours[9] <- "#ffabd5"
+names(patient_colours) <- sort(unique(pheno$`Sample ID`))
+
+
+anno_cols<-list(Region = region_colours,
+                Segment = segment_colours,
+                Patient = patient_colours)
+
+
+# Column annotations
+column_annotation <- data.frame(Region = as.character(pheno$region),
+                                Segment = as.character(pheno$segment),
+                                Patient = as.character(pheno$`Sample ID`),
+                                row.names = row.names(pheno))
+
+
+heatmap_cols <- colorRampPalette(ArchRPalettes$coolwarm)(50)
+#heatmap_cols <- colorRampPalette(brewer.pal(11,"RdBu"))(50)
+
+# Plot heatmap 
+GeoDiffNBthm_DE_heatmap <-pheatmap(normalisedData,
+                            scale = "row",
+                            show_rownames=FALSE,
+                            show_colnames =FALSE,
+                            annotation_col = column_annotation,
+                            annotation_colors = anno_cols,
+                            color=heatmap_cols)
+
+
+
+# Save heatmap
+ggsave(
+  filename = "figures/differential_expression/GeoDiffNBthm_heatmap.pdf",
+  plot = GeoDiffNBthm_DE_heatmap[[4]],
+  width = 9,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+
+
+## Venn diagram - all DE genes for notable comparisons
+
+In the field of spatial transcriptomics it has previously been noted that methods designed for single-cell sequencing are prone to false positives[@wang2019; @jaakkola2016].
+
+https://www.sc-best-practices.org/conditions/differential_gene_expression.html
+
+> 'Methods designed for bulk RNA-seq data performed favorably compared to methods explicitly designed for scRNA-seq data\[Das et al., 2021, Jaakkola et al., 2016, Soneson and Robinson, 2018, Squair et al., 2021\]. Single-cell specific methods were found to be especially prone to wrongly labeling highly expressed genes as differentially expressed.'
+
+In the below code the consensus between models was investigated. 
+
+```{r}
+
+DE_list <- list(Dream = dream_DE_genes, GeoDiffNBthm = GeoDiffNBthm_DE_genes, LimmaGeoDiff = limma_GeoDiff_DE_genes, LimmaQ3 = limma_Q3_DE_genes, LimmaTMM = limma_TMM_DE_genes)
+ 
+```
+
+```{r}
+
+cols <- wes_palette("Darjeeling1", 5, type = c("discrete"))
+
+venn.diagram(
+  x = DE_list,
+  imagetype="png",
+  filename = './figures/differential_expression/DE_genes_model_comparisons.png',
+  output=TRUE,
+          height = 1360 , 
+          width = 2000 , 
+          resolution = 800,
+          compression = "lzw",
+          lwd = 1,
+          lty = 'blank',
+          fontfamily = "sans",
+          col=cols,
+          fill = cols,
+          scale = FALSE,
+          cex = 0.5,
+          cat.fontfamily = "sans",
+          cat.cex = 0.2,
+          cat.default.pos = "outer",
+          #cat.pos = c(45, -45),
+          #cat.dist = c(0.15, 0.15)
+
+)
+
+```
+
+https://www.r-bloggers.com/2012/06/intersect-for-multiple-vectors-in-r/
+
+```{r}
+
+robust_DE_genes <- Reduce(intersect, DE_list)
+write(robust_DE_genes, "./results/differential_expression/robust_DE_genes.txt")
+
+```
+
+
+## Correlation between methods
+
+```{r}
+
+all_results <- list("dreamGeoDiff" = dream_results_table[1:12], "limmaTMM" = limma_TMM_results_table[1:12], "limmaTMM-GeoDiff" = limma_TMM_GeoDiff_results_table[1:12], "limmaRUVseq" = limma_RUVseq_results_table[1:12], "limmaQ3" = limma_Q3_results_table[1:12], "limmaGeoDiff" = limma_GeoDiff_results_table[1:12], "NB-GLMM-GeoDiff" =GeoDiffNB_results_table[1:12])
+
+
+# Fold-change
+p1 <- modelCorrelation(all_results, filter.sig = F, title = "Fold-change correlation", subtitle = "No significance threshold")
+p1
+
+# P-values
+p2 <- modelCorrelation(all_results, by.pval = T, filter.sig = F, title = "P-value correlation", subtitle = "No significance threshold")
+p2
+
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/model_correlations_fold-change.png",
+  plot = p1,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/differential_expression/model_correlations_pvals.png",
+  plot = p2,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+
+
+## Conserved genes for each contrast across all models
+
+```{r}
+# Previous section didn't include the LE-PanCK vs all PanCK comparisons because they'd dominate the results (too many DE genes in comparison)
+# Here they're included as the intersection for each contrast is being checked individually
+
+
+# Create list of lists (all models except RUVseq & Q3, all contrasts)
+all_results <- list("dreamGeoDiff" = dream_results_table[1:16], "limmaTMM" = limma_TMM_results_table[1:16], "limmaTMM-GeoDiff" = limma_TMM_GeoDiff_results_table[1:16], "limmaGeoDiff" = limma_GeoDiff_results_table[1:16], "NB-GLMM-GeoDiff" =GeoDiffNB_results_table[1:16])
+# "limmaRUVseq" = limma_RUVseq_results_table[1:16], "limmaQ3" = limma_Q3_results_table[1:16], 
+
+# Iterate through the list of lists to get lists of DE genes per contrast, per model
+res_list <- list()
+
+for (i in 1:16){
+  for (j in 1: length(all_results)){
+    
+    contrast <- contrasts[i]
+    model <- names(all_results)[j]
+    
+    colnames(all_results[[j]][[i]])[which(names(all_results[[j]][[i]]) == "adjp")] <- "adj.P.Val"
+    
+    res_list[[contrast]][model] <- all_results[[j]][i] 
+    
+    res_list[[contrast]][[model]] <-  row.names(res_list[[contrast]][[model]][res_list[[contrast]][[model]]$adj.P.Val < 0.05,])
+    
+  }
+}
+
+
+
+# Collapse the lists of DE genes to the intersect between them
+res_list_collapsed <- list()
+
+for (i in 1:length(res_list)){
+  
+  contrast <- contrasts[i]
+  res_list_collapsed[[contrast]] <-  Reduce(intersect, res_list[[contrast]])
+  
+}
+
+
+
+# Convert list of DE genes across all models to DF
+res_list_collapsed_DF <- t(tibble(V = res_list_collapsed) %>% 
+                  unnest_wider(V, names_sep = ""))
+
+
+colnames(res_list_collapsed_DF) <- contrasts[1:16]
+
+
+# Write outputs
+write.csv(res_list_collapsed_DF, "results/differential_expression/robust_DE_genes_per_contrast.csv", row.names = F)
+write_rds(res_list_collapsed, "results/differential_expression/robust_DE_genes_per_contrast.rds")
+
+```
+
+The contrasts with DE genes across all models are: "CD45_Adenomyosis-CD45_Functionalis", "Stroma_Adenomyosis-Stroma_Functionalis", "PanCK_Adenomyosis-PanCK_Functionalis", "CD45_Adenomyosis-CD45_Basalis" & "Stroma_Adenomyosis-Stroma_Basalis". The PanCK-LE vs PanCK-all contrasts have many differentially expressed genes conserved between models too.
+
+https://www.nature.com/articles/s41588-021-00972-2 https://www.sciencedirect.com/science/article/pii/S0015028204009781
+
+## LE venn diagram
+
+```{r}
+#| eval: false
+
+LE_list <- list("LE vs adeno" = res_list_collapsed$`PanCK_LE-PanCK_Adenomyosis`,
+             "LE vs functionalis" = res_list_collapsed$`PanCK_LE-PanCK_Functionalis`,
+             "LE vs basalis" = res_list_collapsed$`PanCK_LE-PanCK_Basalis`)
+
+```
+
+
+
+```{r}
+#| eval: false
+
+cols <- c("#2dc4cc", "#e0690d", "#7570B3")
+
+venn.diagram(
+  x = LE_list,
+  imagetype="png",
+  filename = "figures/differential_expression/LE_vs_all_PanCK.png",
+  output=TRUE,
+          height = 675, 
+          width = 700, 
+          resolution = 600,
+          compression = "lzw",
+          lwd = 1,
+          lty = 'blank',
+          fontfamily = "sans",
+          col=cols,
+          fill = cols,
+          scale = FALSE,
+          cex = 0.4,
+          cat.fontfamily = "sans",
+          cat.cex = 0.25,
+          cat.default.pos = "outer",
+          cat.pos = c(-25, 25, 0),
+          cat.dist = c(0.07, 0.07, 0.03)
+
+)
+
+
+```
+
+## Create a list of all models with each contrast 
+
+This will be used to assess the performance of the models using pathway enrichment sensitivity analysis. 
+
+```{r}
+#| eval: false
+
+# Create list of lists (all models except RUVseq & Q3, all contrasts)
+all_models <- list("dreamGeoDiff" = dream_results_table[1:16], "limmaTMM" = limma_TMM_results_table[1:16], "limmaTMM-GeoDiff" = limma_TMM_GeoDiff_results_table[1:16], "limmaRUVseq" = limma_RUVseq_results_table[1:16], "limmaQ3" = limma_Q3_results_table[1:16], "limmaGeoDiff" = limma_GeoDiff_results_table[1:16], "NB-GLMM-GeoDiff" =GeoDiffNB_results_table[1:16])
+
+```
+
+```{r}
+#| eval: false
+
+write_rds(all_models, "results/differential_expression/all_models_all_contrasts.rds")
+
+```
+
+### Assess sensitivity of all models by comparing the p-values of functional enrichment
+
+```{r}
+#| eval: false
+
+# All models
+all_models <- readRDS("results/differential_expression/all_models_all_contrasts.rds")
+
+# Create list of enrichment dataframes
+enrichment_results_all_models <- all_models %>% map(compareClustersDF, pvalueCutoff = 1, gmt=gmt) 
+
+# Save results
+write_rds(enrichment_results_all_models, "results/functional_enrichment/all_models_reactome_enrichment_-log10_pval.rds")
+
+```
+
+```{r}
+
+# Read in data
+enrichment_results_all_models <- readRDS("results/functional_enrichment/all_models_reactome_enrichment_-log10_pval.rds")
+
+# Create collapsed df of p.values per model
+pvals_per_model <- do.call(rbind, enrichment_results_all_models) %>% mutate("Model_name" = gsub('\\..*', '', row.names(.))) %>% dplyr::select(ID, p.adjust, Model_name)
+
+
+# Calculate means per group
+group_means <- pvals_per_model %>%
+  group_by(Model_name) %>%
+  dplyr::summarize(Mean = mean(p.adjust, na.rm=TRUE))
+
+
+# Use semi-transparent fill
+sensitivity_plot <-ggplot(pvals_per_model, aes(x=p.adjust, color=Model_name, fill=Model_name)) +
+  geom_density(alpha=0.2) +
+  geom_vline(data=group_means, aes(xintercept=Mean, color=Model_name),
+             linetype="dashed") +
+  xlab("Adjusted p.values") +
+  ylab("Density") +
+  labs(fill="Model", colour="Model") +
+  theme_cowplot()
+
+
+
+# Write plot
+ggsave(
+  filename = "figures/functional_enrichment/model_sensitivity_density.pdf",
+  plot = sensitivity_plot,
+  width = 8,
+  height = 5,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+write.csv(group_means, "results/functional_enrichment/model_enrichment_means.csv")
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

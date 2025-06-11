@@ -1,0 +1,405 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Functional enrichment"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Functional enrichment
+
+This notebook uses GSEA to test for GO term and Reactome pathway enrichment for the contrasts of interest.
+
+## Load libraries
+
+```{r}
+#| output: false
+library(tidyverse)
+library(cowplot)
+library(reshape2)
+library(writexl)
+library(ggrepel)
+library(patchwork)
+library(statmod)
+library(clusterProfiler)
+library(SBGNview)
+library(ggthemes)
+library(org.Hs.eg.db)
+source("src/utilityFunctions.R")
+```
+
+# Read in data
+
+```{r}
+
+# Load all pathway data in SBGN database
+data("sbgn.xmls")
+
+# GeoDiff normalised limma-trend
+limma_GeoDiff_results <- readRDS("results/differential_expression/limma_GeoDiff_pairwise_comparisons.RDS")
+
+```
+
+```{r}
+
+# Read in and format gene set file
+gmt <-read.gmt("data/c2.cp.reactome.v2023.1.Hs.symbols.gmt")
+
+# Remove the 'hallmark_' prefix in front of the gene name and convert to lowercase
+gmt$term <- gsub("REACTOME_", "", gmt$term)
+gmt$term <- tolower(gmt$term) 
+
+```
+
+
+
+# GeoDiff normalised limma model results
+
+Create lists of the contrasts for each stain:
+
+```{r}
+
+CD31 <- limma_GeoDiff_results[grep("CD31", names(limma_GeoDiff_results))]
+names(CD31) <- gsub("CD31_", "", names(CD31))
+
+CD45 <- limma_GeoDiff_results[grep("CD45", names(limma_GeoDiff_results))]
+names(CD45) <- gsub("CD45_", "", names(CD45))
+
+stroma <- limma_GeoDiff_results[grep("Stroma", names(limma_GeoDiff_results))]
+stroma <- stroma[c(1,2,3,5)]
+names(stroma) <- gsub("Stroma_", "", names(stroma))
+
+panCK <- limma_GeoDiff_results[grep("PanCK", names(limma_GeoDiff_results))]
+names(panCK) <- gsub("PanCK_", "", names(panCK))
+
+
+subset_GeoDiff_limma_res <- list("CD31" = CD31, "CD45" = CD45, "Stroma" = stroma, "PanCK" = panCK)
+
+```
+
+## Reactome pathway enrichment
+
+```{r}
+#| eval: false
+
+# Create list of enrichment objects for each stain
+GeoDiff_limma_enrichment <- subset_GeoDiff_limma_res %>% map(compareClustersGSEA, pvalueCutoff = 0.01, gmt=gmt) 
+
+names(GeoDiff_limma_enrichment) <- names(subset_GeoDiff_limma_res)
+
+# Save results
+write_rds(GeoDiff_limma_enrichment, "results/functional_enrichment/GeoDiff_limma_enrichment.rds")
+
+```
+
+```{r}
+
+GeoDiff_limma_enrichment <- readRDS("results/functional_enrichment/GeoDiff_limma_enrichment.rds")
+
+```
+
+```{r}
+
+titles <- paste("Reactome GSEA enrichment for",  names(GeoDiff_limma_enrichment), "segments")
+dotplots <- GeoDiff_limma_enrichment %>% map2(titles, createDotplot)
+
+```
+
+https://rdrr.io/bioc/enrichplot/src/R/dotplot.R
+
+### C45
+
+```{r}
+#| eval: false
+
+# Fold-changes
+CD45_adenomyosis_vs_functionalis_logFC <- CD45$`Adenomyosis-Functionalis` %>% arrange(desc(logFC)) %>%
+      rownames_to_column() %>%
+      pull(logFC, rowname)
+
+
+
+# Create visualisation for collagen cross-linking pathway
+SBGNview.obj <- SBGNview(gene.data = CD45_adenomyosis_vs_functionalis_logFC,
+                         input.sbgn = "R-HSA-2559582",
+                         #max.gene.value = 3,
+                         #min.gene.value = 3,
+                         #mid.gene.value = 0,
+                         output.file = "figures/functional_enrichment/networks/CD45_adenomyosis_vs_functionalis_SASP",
+                         gene.id.type = "SYMBOL",
+                         col.gene.low = "#6D9EC1",
+                         col.gene.high = "firebrick3",
+                         col.gene.mid = "gray",
+                         output.formats =  c("png", "pdf", "ps"))
+SBGNview.obj
+
+```
+
+### Stroma
+
+```{r}
+
+# Fold-changes
+stroma_adenomyosis_vs_functionalis_logFC <- stroma$`Adenomyosis-Functionalis` %>% arrange(desc(logFC)) %>%
+      rownames_to_column() %>%
+      pull(logFC, rowname)
+
+stroma_adenomyosis_vs_basalis_logFC <- stroma$`Adenomyosis-Basalis` %>% arrange(desc(logFC)) %>%
+      rownames_to_column() %>%
+      pull(logFC, rowname)
+
+
+stroma_adenomyosis_vs_myometrium_logFC <- stroma$`Adenomyosis-Myometrium` %>% arrange(desc(logFC)) %>%
+      rownames_to_column() %>%
+      pull(logFC, rowname)
+
+
+# FC dataframe
+stroma_fc <- list(stroma_adenomyosis_vs_functionalis_logFC, stroma_adenomyosis_vs_basalis_logFC, stroma_adenomyosis_vs_myometrium_logFC)
+stroma_fc <- t(tibble(V = stroma_fc) %>% 
+                  unnest_wider(V, names_sep = ""))
+
+row.names(stroma_fc) <- str_sub(row.names(stroma_fc), 2)
+
+
+```
+
+```{r}
+#| eval: false
+
+# Create visualisation 
+SBGNview.obj <- SBGNview(gene.data = stroma_fc,
+                         input.sbgn = "R-HSA-445355",
+                         #max.gene.value = 4,
+                         #min.gene.value = 4,
+                         #mid.gene.value = 0,
+                         output.file = "figures/functional_enrichment/networks/stroma_muscle_contraction",
+                         gene.id.type = "SYMBOL",
+                         col.gene.low = "#6D9EC1",
+                         col.gene.high = "firebrick3",
+                         col.gene.mid = "gray",
+                         output.formats =  c("png", "pdf", "ps"))
+SBGNview.obj
+
+```
+
+```{r}
+#| eval: false
+
+findPathways(c("androgen"))
+
+```
+
+```{r}
+#| eval: false
+#R-HSA-5625886
+
+# Create visualisation 
+SBGNview.obj <- SBGNview(gene.data = stroma_fc,
+                         input.sbgn = "R-HSA-5625886",
+                         #max.gene.value = 4,
+                         #min.gene.value = 4,
+                         #mid.gene.value = 0,
+                         output.file = "figures/functional_enrichment/networks/androgen_signalling",
+                         gene.id.type = "SYMBOL",
+                         col.gene.low = "#6D9EC1",
+                         col.gene.high = "firebrick3",
+                         col.gene.mid = "gray",
+                         output.formats =  c("png", "pdf", "ps"))
+SBGNview.obj
+
+
+
+```
+
+### Save results
+
+```{r}
+
+ggsave(
+  filename = "figures/functional_enrichment/CD45_enrichment_dotplot_geodiff_limma.pdf",
+  plot = dotplots$CD45,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/CD31_enrichment_dotplot_geodiff_limma.pdf",
+  plot = dotplots$CD31,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/stroma_enrichment_dotplot_geodiff_limma.pdf",
+  plot = dotplots$Stroma,
+  width = 8.5,
+  height = 8,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/panCK_enrichment_dotplot_geodiff_limma.pdf",
+  plot = dotplots$PanCK,
+  width = 10,
+  height = 9,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+```{r}
+
+# Save results
+write.csv(GeoDiff_limma_enrichment$CD31, "results/functional_enrichment/reactome/CD31_GeoDiff_limma_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment$CD45, "results/functional_enrichment/reactome/CD45_GeoDiff_limma_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment$Stroma, "results/functional_enrichment/reactome/Stroma_GeoDiff_limma_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment$PanCK, "results/functional_enrichment/reactome/PanCK_GeoDiff_limma_enrichment.csv")
+
+
+```
+
+## GO term enrichment
+
+```{r}
+#| eval: false
+
+# Create list of enrichment objects for each stain
+GeoDiff_limma_enrichment_GO <- subset_GeoDiff_limma_res %>% map(compareClustersGO, pvalueCutoff = 0.01) 
+
+names(GeoDiff_limma_enrichment_GO) <- names(subset_GeoDiff_limma_res)
+
+# Save results
+write_rds(GeoDiff_limma_enrichment_GO, "results/functional_enrichment/GeoDiff_limma_GO_term_enrichment.rds")
+
+```
+
+```{r}
+
+GeoDiff_limma_enrichment_GO <- readRDS("results/functional_enrichment/GeoDiff_limma_GO_term_enrichment.rds")
+
+```
+
+```{r}
+
+titles <- paste("GO term GSEA enrichment for",  names(GeoDiff_limma_enrichment_GO), "segments")
+go_dotplots <- GeoDiff_limma_enrichment_GO %>% map2(titles, createDotplot)
+
+```
+
+### Save results
+
+```{r}
+
+# Plots
+ggsave(
+  filename = "figures/functional_enrichment/CD45_GO_term_enrichment_dotplot_geodiff_limma.pdf",
+  plot = go_dotplots$CD45,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/CD31_GO_term_enrichment_dotplot_geodiff_limma.pdf",
+  plot = go_dotplots$CD31,
+  width = 6,
+  height = 6,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/stroma_GO_term_enrichment_dotplot_geodiff_limma.pdf",
+  plot = go_dotplots$Stroma,
+  width = 11,
+  height = 8,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+ggsave(
+  filename = "figures/functional_enrichment/panCK_GO_term_enrichment_dotplot_geodiff_limma.pdf",
+  plot = go_dotplots$PanCK,
+  width = 14.5,
+  height = 9,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+```{r}
+#| echo: false
+#| output: false
+
+fig3B <- go_dotplots$PanCK + dotplots$PanCK
+
+write_rds(fig3B, "figures/paper/fig3B.rds")
+
+```
+
+```{r}
+
+# Results
+write.csv(GeoDiff_limma_enrichment_GO$CD31, "results/functional_enrichment/GO/CD31_GeoDiff_limma_GO_term_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment_GO$CD45, "results/functional_enrichment/GO/CD45_GeoDiff_limma_GO_term_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment_GO$Stroma, "results/functional_enrichment/GO/Stroma_GeoDiff_limma_GO_term_enrichment.csv")
+
+write.csv(GeoDiff_limma_enrichment_GO$PanCK, "results/functional_enrichment/GO/PanCK_GeoDiff_limma_GO_term_enrichment.csv")
+
+
+```
+
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

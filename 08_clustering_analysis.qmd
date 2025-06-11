@@ -1,0 +1,208 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Clustering analysis"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Clustering analysis
+
+## Load libraries
+
+```{r}
+#| output: false
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(cowplot)
+library(reshape2)
+library(sva)
+library(pheatmap)
+library(wesanderson)
+source("src/utilityFunctions.R")
+source("src/ArchRpalettes.R") # additional colour palettes
+
+```
+
+
+# Read in data
+
+```{r}
+
+# Normalised GeoDiff processed data
+target_spatial_data_geoDiff  <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+
+```
+
+# Batch correct data
+
+```{r}
+
+# Extract data
+mat <- target_spatial_data_geoDiff@assayData$normmat
+mat <- na.omit(mat)
+
+# Pheno
+pheno <- pData(target_spatial_data_geoDiff)
+
+
+# Remove batch effect
+mod0 <- model.matrix(~ 1, data=pheno)
+corrected_data <- ComBat(dat=as.matrix(mat), batch=pheno$`Sample ID`, mod=mod0, par.prior = TRUE, prior.plot = TRUE)
+
+```
+
+
+# Visualise sample correlation
+
+## All
+
+```{r}
+
+all_cor <- cor(corrected_data, use = "complete.obs")
+
+```
+
+
+```{r}
+
+# Colour palettes for column annotations
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+names(region_colours) <- sort(unique(pheno$region))
+
+#segment_colours <- c("#FF8E73", "#2B6FAB", "#A6EF4B", "#FFA8FF")
+segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+names(segment_colours) <- sort(unique(pheno$segment))
+
+anno_cols<-list(Region = region_colours,
+                Segment = segment_colours)
+
+
+
+# Colour palette for heatmap
+heatmap_cols <- colorRampPalette(ArchRPalettes$coolwarm)(50)
+
+# Column annotations
+column_annotation <- data.frame(Region = as.character(pheno$region),
+                                Segment = as.character(pheno$segment),
+                                row.names = row.names(pheno))
+
+
+
+# Heatmap
+cor_heatmap <- pheatmap(all_cor,
+                              annotation_col = column_annotation,
+                              annotation_colors = anno_cols,
+                              cluster_rows=TRUE,
+                              cluster_cols=TRUE,
+                              border_color = NA,
+                              color = heatmap_cols,
+                              fontsize_number = 14,
+                              fontsize_row = 11,
+                              fontsize_col = 11,
+                              number_color = "black",
+                              legend = FALSE,
+                              clustering_method = "ward.D2",
+                              treeheight_row=0,
+                              show_colnames = F, show_rownames = F)
+
+
+```
+
+```{r}
+
+ggsave(
+  filename = "./figures/clustering/all_samples_clustering.pdf",
+  plot = cor_heatmap[[4]],
+  width = 6,
+  height = 4.5,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+```
+
+## Stroma
+
+```{r}
+
+# Subset data to only include stroma samples
+pheno_stroma <- pheno[pheno$segment == "Stroma", ]
+corrected_data_stroma <- corrected_data[, pheno$segment == "Stroma"]
+
+```
+
+```{r}
+
+stroma_cor <- cor(corrected_data_stroma, use = "complete.obs")
+
+```
+
+
+```{r}
+
+# Colour palettes for column annotations
+region_colours_stroma <- region_colours[-4]
+names(region_colours_stroma) <- sort(unique(pheno_stroma$region))
+
+anno_cols<-list(Region = region_colours_stroma)
+
+
+# Colour palette for heatmap
+heatmap_cols <- colorRampPalette(ArchRPalettes$coolwarm)(50)
+
+
+# Heatmap
+stroma_cor_heatmap <- pheatmap(stroma_cor,
+                              annotation_col = data.frame(Region = as.character(pheno_stroma$region), row.names = row.names(pheno_stroma)),
+                              annotation_colors = anno_cols[1],
+                              cluster_rows=TRUE,
+                              cluster_cols=TRUE,
+                              border_color = NA,
+                              color = heatmap_cols,
+                              fontsize_number = 14,
+                              fontsize_row = 11,
+                              fontsize_col = 11,
+                              number_color = "black",
+                              legend = FALSE,
+                              #clustering_method = "ward.D2",
+                              treeheight_row=0,
+                              show_colnames = F, show_rownames = F)
+
+
+```
+
+```{r}
+
+ggsave(
+  filename = "./figures/clustering/myometrium_clustering.pdf",
+  plot = stroma_cor_heatmap[[4]],
+  width = 6,
+  height = 4.5,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

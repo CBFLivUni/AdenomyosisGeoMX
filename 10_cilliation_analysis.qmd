@@ -1,0 +1,95 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Cilliation analysis"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+# Ligand-receptor binding
+
+## Load libraries
+
+```{r}
+#| output: false
+#| output: false
+library(tidyverse)
+library(cowplot)
+library(reshape2)
+library(ggpubr)
+source("src/palettes.R")
+
+```
+
+
+## Read in data
+
+```{r}
+#| output: false
+ciliation_data <- read.csv("data/cilliation_data.csv")
+
+```
+
+
+## Format data
+
+```{r}
+
+ciliation_data_long <- melt(ciliation_data, id.vars="Sample.ID") %>% dplyr::rename("region" = "variable")
+
+
+```
+
+
+
+## Plot it
+
+```{r}
+
+ciliation_plot <- ggplot(ciliation_data_long, aes(x=region, y=value, fill=region)) +
+  geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.12, alpha = 1, na.rm = TRUE)+
+  geom_point(colour = "#333333", position = ggplot2::position_jitterdodge(dodge.width = 1),
+               size = 1.4,
+               stroke = 0,
+               show.legend = NA,
+               na.rm = TRUE)+
+  scale_fill_manual(values = project_palettes$region_colours) + 
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  theme_cowplot()+
+  ylab("Alpha-tubulin staining") +
+  xlab("") +
+  labs(fill="Region")
+
+
+#my_comparisons <- list( c("Adenomyosis", "Basalis"), c("Adenomyosis", "Functionalis"), c("Adenomyosis", "LE") )
+ciliation_plot <- ciliation_plot + stat_compare_means(label = "p.signif", method = "t.test",
+                     ref.group = "Adenomyosis")    
+
+
+ciliation_plot
+
+
+save_plot(filename = "figures/ciliation_analysis.pdf", plot = ciliation_plot, base_height = 3,base_width = 7, bg="white")
+
+write_rds(ciliation_plot, "figures/paper/fig3D.rds")
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

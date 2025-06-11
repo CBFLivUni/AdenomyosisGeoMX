@@ -1,13 +1,46 @@
+#raw data
+data/*
+data/*.txt
+data/*.csv
+data/*.xlsx
+data/*#
+data/*/*.txt
+data/*/*.xlsx
+data/*/*#
+data/*/*/*.txt
+data/*/*/*.xlsx
+data/*/*/*#
+data/*.rds
+data/*.tsv
+
+#processed data
+outputs/*
+results/*
+results/*.rds
+results/*.csv
+
+#figures
+figures/*
+
+#misc
+powerpoints/*
+
+#figure chunks
+figure/*
+figure/*/*
+
+
 # History files
 .Rhistory
 .Rapp.history
 
 # Session Data files
 .RData
-.RDataTmp
+*/.RData
 
 # User-specific files
 .Ruserdata
+*/.Ruserdata
 
 # Example code in package build process
 *-Ex.R
@@ -20,6 +53,7 @@
 
 # RStudio files
 .Rproj.user/
+*.Rdata
 
 # produced vignettes
 vignettes/*.html
@@ -39,11 +73,12 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
-# pkgdown site
-docs/
 
-# translation temp files
-po/*~
+# Other outputs
+*/*.txt
+*/*.RData
 
-# RStudio Connect folder
-rsconnect/
+/.quarto/
+nul
+nichenetR_res_adenomyosis_myo.rds
+

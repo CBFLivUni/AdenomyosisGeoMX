@@ -1,0 +1,248 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "DE analysis - true functionalis vs basalis"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+# Differential expression analysis
+
+## Load libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(factoextra)
+library(reshape2)
+library(pheatmap)
+library(writexl)
+library(ggrepel)
+library(edgeR)
+library(limma)
+library(statmod)
+library(variancePartition)
+library(GeoDiff)
+library(janitor)
+library(VennDiagram)
+library(cowplot)
+library(doParallel)
+library(lme4)
+library(RColorBrewer)
+library(wesanderson)
+library(randomcoloR)
+library(SummarizedExperiment)
+source("src/utilityFunctions.R")
+source("src/ArchRpalettes.R") # additional colour palettes
+```
+
+## Load the normalised data
+
+```{r}
+
+target_spatial_data_geoDiff <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+
+```
+
+## Subset data to only be true basalis/functionalis
+
+```{r}
+
+# as confirmed by alison
+true_basalis_functionalis <- c("SPCN044|SPCN307|SPCN332|SPCN365|LWB220063|SPCN035|SPCN351|SCE078")
+
+```
+
+
+```{r}
+
+mat <- target_spatial_data_geoDiff@assayData$normmat
+mat <- na.omit(mat)
+
+pheno <- pData(target_spatial_data_geoDiff)
+pheno_filtered <- pheno %>% filter(grepl(true_basalis_functionalis, `Sample ID`))
+
+
+mat_filtered <- mat[,row.names(pheno_filtered)]
+
+```
+
+```{r}
+
+table(pheno_filtered$Annotation, pheno_filtered$`Sample ID`)
+
+
+```
+
+## Limma with GeoDiff normalised data method
+
+```{r}
+#| echo: true
+#| eval: true
+
+design  <- model.matrix( ~ 0 + Annotation, pheno_filtered)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+dupcor <- duplicateCorrelation(mat_filtered, design, block=pheno_filtered$`Sample ID`)
+
+# This step uses only the genome-wide average for the random effect
+fitDupCor <- lmFit(mat_filtered, design, block=pheno_filtered$`Sample ID`, correlation=dupcor$consensus)
+
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2,trend = TRUE)
+
+
+true_fb_limma_GeoDiff_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+            x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(true_fb_limma_GeoDiff_results_table) <- colnames(contrast.matrix)
+
+
+# Save results
+saveRDS(true_fb_limma_GeoDiff_results_table,file="results/differential_expression/true_basalis_functionalis/TRUE_f-vs-b_limma_GeoDiff_pairwise_comparisons.RDS")
+
+true_fb_limma_GeoDiff_results_table_short_names <- true_fb_limma_GeoDiff_results_table
+names(true_fb_limma_GeoDiff_results_table_short_names) <- str_trunc(names(true_fb_limma_GeoDiff_results_table_short_names), 31, "right")
+openxlsx::write.xlsx(true_fb_limma_GeoDiff_results_table_short_names, file = "./results/differential_expression/true_basalis_functionalis/TRUE_f-vs-b_limma_GeoDiff_pairwise_comparisons.xlsx", rowNames = TRUE)
+
+
+# Summary of DE expressed genes per comparison 
+GeoDiff_res_summary <- data.frame(summary(decideTests(fit2)))
+GeoDiff_res_summary <- reshape2::dcast(as.data.frame(GeoDiff_res_summary), Var2 ~ Var1, value.var="Freq")
+write.csv(GeoDiff_res_summary, "./results/differential_expression/true_basalis_functionalis/TRUE_f-vs-b_limma_GeoDiff_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (GeoDiff norm)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_GeoDiff_norm_DE_res <- DEResPlot(true_fb_limma_GeoDiff_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_GeoDiff_norm_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/TRUE_f-vs-b_DE_summary_limma_GeoDiff_norm.png",
+  plot = limma_GeoDiff_norm_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### DE genes list
+
+```{r}
+
+# Vector of DE genes
+limma_GeoDiff_DE_genes <- do.call(rbind, true_fb_limma_GeoDiff_results_table[1:12]) %>% mutate("gene_name" = gsub('.*\\.', '', row.names(.)))
+limma_GeoDiff_DE_genes <- unique(limma_GeoDiff_DE_genes[limma_GeoDiff_DE_genes$adj.P.Val <0.05,]$gene_name)
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(true_fb_limma_GeoDiff_results_table)))
+
+
+volcano_plots <- true_fb_limma_GeoDiff_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/TRUE_f-vs-b_region_volcano_plots_limma_GeoDiff.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- true_fb_limma_GeoDiff_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+```{r}
+
+volcano_plots_LE <- true_fb_limma_GeoDiff_results_table[14:16] %>% map2(titles[14:16], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 3)
+
+
+save_plot(plot = volcano_plots_LE, filename = "figures/differential_expression/TRUE_f-vs-b_LE_vs_all_volcano_plots_limma_GeoDiff.png",base_height = 5.5,base_width = 15,bg="white")
+
+```
+
+```{r}
+
+volcano_plots_myometrium <- true_fb_limma_GeoDiff_results_table[c(17,13)] %>% map2(c("Stroma Adenomyosis - Stroma Myometrium", "Stroma Myo near adeno - Stroma Myo near endo"), plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 2)
+
+
+save_plot(plot = volcano_plots_myometrium, filename = "figures/differential_expression/TRUE_f-vs-b_myometrium_volcano_plots_limma_GeoDiff.png",base_height = 6.5,base_width = 12,bg="white")
+
+```
+
+
+# Correlation between results with all patients and those with true basalis/functionalis phenotype
+
+```{r}
+
+limma_GeoDiff_results_table <- readRDS("results/differential_expression/limma_GeoDiff_pairwise_comparisons.RDS")
+
+```
+
+```{r}
+
+titles <- names(limma_GeoDiff_results_table)
+titles[13] <- "Stroma_myo_nr_adeno-Stroma_myo_nr_endo"
+
+all_res <- list(limma_GeoDiff_results_table, true_fb_limma_GeoDiff_results_table, titles)
+
+
+correlation_plots <- pmap(all_res, plotCorrelation, xlab="All patients t-scores", ylab="True basalis/functionalis patients t-scores") %>% plot_grid(plotlist = . ,ncol = 3)
+
+save_plot(plot = correlation_plots, filename = "figures/differential_expression/true_basalis_functionalis/geodiff_results_correlation.png",base_height = 30,base_width = 17,bg="white")
+
+```
+
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

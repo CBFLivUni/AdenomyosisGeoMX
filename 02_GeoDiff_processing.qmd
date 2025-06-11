@@ -1,0 +1,214 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "GeoDiff based quality control"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+This notebook using the GeoDiff approach for model based background estimation to filter the probes and samples.
+
+This workflow is outlined in the following vignette and paper:
+
+-   https://bioconductor.org/packages/devel/bioc/vignettes/GeoDiff/inst/doc/Workflow_WTA_kidney.html
+
+-   https://www.biorxiv.org/content/10.1101/2022.05.26.493637v1.full
+
+## Load libraries
+
+```{r}
+#| output: false
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(GeoDiff)
+
+```
+
+## Load data
+
+The QC filtered data from the previous document is the starting point for the GeoDiff model based background estimation.
+
+```{r}
+spatial_data <- readRDS("results/QC_pass_spatial_data.rds")
+#spatial_data <- spatial_data[,sampleNames(spatial_data)!= "DSP-1012990007352-D-A02.dcc"]
+featureType(spatial_data)
+paste("## of Negative Probes:", sum(fData(spatial_data)$Negative))
+```
+
+## Fit model
+
+A Poisson model is fit to the data and dispersion is examined to see if the model a reasonable fit.
+
+```{r}
+#| label: fig-poissonModel-no-split
+#| fig-cap: QQ-plot of the model fit
+#| fig-width: 6
+#| fig-height: 6
+spatial_data_no_split <- fitPoisBG(spatial_data)
+
+summary(pData(spatial_data_no_split)$sizefact)
+summary(fData(spatial_data_no_split)$featfact[fData(spatial_data_no_split)$Negative])
+set.seed(123)
+spatial_data_no_split <- diagPoisBG(spatial_data_no_split)
+notes(spatial_data_no_split)$disper
+
+```
+
+Dispersion \>2 so probable batch effect or outliers. Remove outliers and split by slide instead:
+
+```{r}
+
+which(assayDataElement(spatial_data_no_split, "up_outlier") == 1, arr.ind = TRUE)
+which(assayDataElement(spatial_data_no_split, "low_outlier") == 1, arr.ind = TRUE)
+
+```
+
+```{r}
+
+assayDataElement(spatial_data, "exprs")[assayDataElement(spatial_data_no_split, "up_outlier") == 1] <- NA
+assayDataElement(spatial_data, "exprs")[assayDataElement(spatial_data_no_split, "low_outlier") == 1] <- NA
+
+```
+
+```{r}
+#| label: fig-poissonModel
+#| fig-cap: QQ-plot of the model fit
+#| fig-width: 6
+#| fig-height: 6
+
+spatial_data <- fitPoisBG(spatial_data)
+spatial_data <- fitPoisBG(spatial_data,"slide name")
+
+summary(pData(spatial_data)$sizefact)
+summary(fData(spatial_data)$featfact[fData(spatial_data)$Negative])
+
+set.seed(123)
+spatial_data <- diagPoisBG(spatial_data,split=TRUE)
+notes(spatial_data)$disper
+#1.013863
+
+```
+
+Dispersion is now \<2 indicating a suitable fit and we were good to proceed with the rest of the workflow.
+
+
+```{r}
+
+hist(fData(spatial_data)$featfact[fData(spatial_data)$Negative]/dim(spatial_data)[2], xlab="Probe average count", main="Negative probe average count distribution")
+
+```
+
+
+
+## Aggregate probes
+
+Probes are aggregated based on their correlation.
+
+```{r}
+all0probeidx <- which(rowSums(exprs(spatial_data))==0)
+if (length(all0probeidx) > 0) {
+    spatial_data <- spatial_data[-all0probeidx, ]
+}
+spatial_data <- aggreprobe(spatial_data, use = "cor")
+```
+
+## Background score test
+
+Using the background model, genes expressed above the background of the negative probes across this dataset are filtered using the suggested p-value threshold of 1e-3.
+
+```{r}
+spatial_data <- BGScoreTest(spatial_data,useprior = TRUE)
+
+sum(fData(spatial_data)[["pvalues"]] < 1e-3, na.rm = TRUE)
+```
+
+## Estimate the size factor
+
+Differences in sequencing depth are taking into account by estimating size factors.
+
+::: callout-note
+A seed is set as this process is uses random sampling.
+:::
+
+```{r}
+#| label: fig-bgScoreComparison
+#| fig-cap: Correlation between GeoDiff size factor and QC signal factor
+#| fig-width: 6
+#| fig-height: 6
+
+
+set.seed(123)
+
+spatial_data <- fitNBth(spatial_data, split = TRUE)
+features_high <- rownames(fData(spatial_data))[fData(spatial_data)$feature_high_fitNBth == 1]
+
+length(features_high)
+
+bgMean <- mean(fData(spatial_data)$featfact, na.rm = TRUE)
+
+notes(spatial_data)[["threshold"]]
+bgMean
+
+notes(spatial_data)$bgMean <- bgMean
+
+cor(spatial_data$sizefact, spatial_data$sizefact_fitNBth)
+
+plot(spatial_data$sizefact, spatial_data$sizefact_fitNBth, xlab = "Background Size Factor",
+     ylab = "Signal Size Factor")
+abline(a = 0, b = 1)
+
+# get only biological probes
+posdat <- spatial_data[-which(fData(spatial_data)$CodeClass == "Negative"), ]
+posdat <- exprs(posdat)
+
+quan <- sapply(c(0.75, 0.8, 0.9, 0.95), function(y)
+  apply(posdat, 2, function(x) quantile(x, probs = y)))
+
+corrs <- apply(quan, 2, function(x) cor(x, spatial_data$sizefact_fitNBth))
+names(corrs) <- c(0.75, 0.8, 0.9, 0.95)
+
+corrs
+quan75 <- apply(posdat, 2, function(x) quantile(x, probs = 0.75))
+
+# NOTE: WHY SPLIT = FALSE HERE??
+spatial_data <- QuanRange(spatial_data, split = FALSE, probs = c(0.75, 0.8, 0.9, 0.95))
+
+corrs <- apply(pData(spatial_data)[, as.character(c(0.75, 0.8, 0.9, 0.95))], 2, function(x)
+  cor(x, spatial_data$sizefact_fitNBth))
+
+names(corrs) <- c(0.75, 0.8, 0.9, 0.95)
+
+corrs
+```
+
+# Save data
+
+Poorer quality ROI without high enough signal in comparison to the background are filtered out.
+
+```{r}
+
+ROIs_high <- sampleNames(spatial_data)[which((quantile(fData(spatial_data)[["para"]][, 1],
+                                                  probs = 0.90, na.rm = TRUE) -   notes(spatial_data)[["threshold"]])*spatial_data$sizefact_fitNBth>2)]
+
+
+saveRDS(spatial_data[,ROIs_high], file = "results/GeoDiff_spatial_data.RDS")
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

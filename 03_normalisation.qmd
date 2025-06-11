@@ -1,0 +1,542 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Normalisation"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+    code-fold: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+bibliography: references.bib
+---
+
+# Normalisation
+
+The data needs to be normalised to allow differential expression between samples where expression of a genes changes between conditions due to technical factors such as the sequencing depth. It also ensures our data has a normal distribution and gives it properties amenable to further statistical modelling. 
+
+Four normalisation approaches were used in this notebook: TMM normalisation, upper quantile normalisation (Q3), negative probe normalisation, and GeoDiff normalisation. The former four are dependent on the preprocessing carried out in the notebook '01_data_QC' the latter relies on the preprocesisng carried out in the '02_GeoDiff_processing' notebook. Note: the GeoDiff normalisation had the best results overall, as confirmed by downstream DE results and assessment using pathway analysis. 
+
+During the differential expression step we used the normalised data generated herein for some of our models. However, we also explored some count based models. 
+
+## Load libraries
+
+```{r}
+#| output: false
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(testthat)
+library(tidyverse)
+library(cowplot)
+library(janitor)
+library(GeoDiff)
+library(edgeR)
+library(RUVSeq)
+library(DESeq2)
+library(limma)
+library(matrixStats)
+library(standR)
+
+source("src/utilityFunctions.R")
+
+```
+
+## Load filtered data
+
+QC filtered data is loaded from the previous steps. Note that the samples and genes filtered out differ between the approaches.
+
+```{r}
+target_spatial_data <- readRDS("results/filtered_spatial_data.RDS")
+spatial_data_geoDiff <- readRDS("results/GeoDiff_spatial_data.RDS")
+```
+
+## Plot negative control probes
+
+There is the expected separation of the Q3 and negative probe counts at both the distribution (A) and per segment (B) levels.
+
+```{r}
+#| label: fig-q3vsneg
+#| fig-cap: Signal to noise ratio using the negative control probes
+#| fig-width: 6
+#| fig-height: 6
+# Graph Q3 value vs negGeoMean of Negatives
+ann_of_interest <- "segment"
+
+#get the negative probes
+negativeProbefData <- subset(fData(target_spatial_data), CodeClass == "Negative")
+neg_probes <- unique(negativeProbefData$TargetName)
+
+Stat_data <- 
+    data.frame(row.names = colnames(exprs(target_spatial_data)),
+               Segment = colnames(exprs(target_spatial_data)),
+               Annotation = pData(target_spatial_data)[, ann_of_interest],
+               Q3 = unlist(apply(exprs(target_spatial_data), 2,
+                                 quantile, 0.75, na.rm = TRUE)),
+               NegProbe = exprs(target_spatial_data)[neg_probes, ])
+
+
+Stat_data_m <- gather(Stat_data, key ="Statistic" ,value =  "Value", c("Q3", "NegProbe"))
+
+plt1 <- ggplot(Stat_data_m,
+               aes(x = Value, fill = Statistic)) +
+    geom_histogram(bins = 40) + theme_bw() +
+    scale_x_continuous(trans = "log2") +
+    facet_wrap(~Annotation, nrow = 1) + 
+    scale_fill_brewer(palette = 3, type = "qual") +
+    labs(x = "Counts", y = "Segments, #")
+
+plt2 <- ggplot(Stat_data,
+               aes(x = NegProbe, y = Q3, color = Annotation)) +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed", color = "darkgray") +
+    geom_point() + guides(color = "none") + theme_bw() +
+    scale_x_continuous(trans = "log2") + 
+    scale_y_continuous(trans = "log2") +
+    theme(aspect.ratio = 1) +
+    labs(x = "Negative Probe GeoMean, Counts", y = "Q3 Value, Counts")
+
+plt3 <- ggplot(Stat_data,
+               aes(x = NegProbe, y = Q3 / NegProbe, color = Annotation)) +
+    geom_hline(yintercept = 1, lty = "dashed", color = "darkgray") +
+    geom_point() + theme_bw() +
+    scale_x_continuous(trans = "log2") + 
+    scale_y_continuous(trans = "log2") +
+    theme(aspect.ratio = 1) +
+    labs(x = "Negative Probe GeoMean, Counts", y = "Q3/NegProbe Value, Counts")
+
+btm_row <- plot_grid(plt2, plt3, nrow = 1, labels = c("B", ""),
+                     rel_widths = c(0.43,0.57))
+q3vsneg <- plot_grid(plt1, btm_row, ncol = 1, labels = c("A", ""))
+
+
+save_plot(filename = "figures/Normalisation/q3vsneg.png",plot = q3vsneg,
+          base_height = 8,base_width = 8, bg="white")
+
+q3vsneg
+
+```
+
+# Explore normalisation methods
+
+## Perform TMM normalisation
+
+TMM normalisation is well-established method that is broadly applied in bulk RNAseq workflows [@robinson2010]. Here it is applied as you would in a normal bulk RNAseq workflow. Applying TMM-normalisation to NanoString GeoMX data has been described previously [@vanhijfte2023].
+
+```{r}
+#| output: false
+#| message: false
+#| warning: false
+
+
+pheno <- pData(target_spatial_data)[row.names(pData(target_spatial_data)) %in% colnames(exprs(target_spatial_data)),]
+
+genes <- fData(target_spatial_data)[row.names(fData(target_spatial_data)) %in% rownames(exprs(target_spatial_data)),]
+
+TMM_norm_data <- DGEList(counts = exprs(target_spatial_data), lib.size = colSums(exprs(target_spatial_data)),
+        samples = pheno,
+        genes = genes)
+
+
+
+TMM_norm_data <- calcNormFactors(TMM_norm_data, method = "TMM")
+
+
+TMM_norm_data2 <- DGEList(counts = exprs(target_spatial_data))
+TMM_norm_data2 <- calcNormFactors(TMM_norm_data2, method = "TMM")
+
+# Save data
+saveRDS(TMM_norm_data, file = "results/TMM_normalised_spatial_data.RDS")
+saveRDS(TMM_norm_data2, file = "results/TMM_normalised_spatial_data2.RDS")
+
+```
+
+
+
+## Perform Q3 normalisation
+
+Upper quantile normalisation is used to take into account the effects of differing sequencing depths. It is currently one of the most widely used normalisation methods for Nanostring GeoMx data having been used in multiple high impact studies [@desai2020].
+
+```{r}
+#| output: false
+#| message: false
+#| warning: false
+
+
+# Q3 norm (75th percentile) for WTA/CTA  with or without custom spike-ins
+target_spatial_data <- NanoStringNCTools::normalize(target_spatial_data ,
+                             norm_method = "quant", 
+                             desiredQuantile = .75,
+                             toElt = "q_norm")
+
+```
+
+## Perform negative probe normalisation
+
+This is the default normalisation that comes with nanostring software.
+
+```{r}
+#| output: false
+#| message: false
+#| warning: false
+
+# neg
+target_spatial_data <- NanoStringNCTools::normalize(target_spatial_data ,
+                             norm_method = "neg", 
+                             toElt = "neg_norm")
+
+
+# Note: this RDS file contains both the Q3 and negative normalisation
+saveRDS(target_spatial_data,file = "results/normalised_spatial_data.RDS")
+
+```
+
+## Perform GeoDiff based normalisation
+
+GeoDiff is used to perform the alternative model based normalisation approach. The GeoDiff normalisation method is outlined elsewhere [@yang2022] and has been utilised in other studies [@ryaboshapkina2023].
+
+```{r}
+#| output: false
+#| message: false
+#| warning: false
+
+posdat <- spatial_data_geoDiff[-which(fData(spatial_data_geoDiff)$CodeClass == "Negative"), ]
+features_all <- rownames(posdat)
+features_high <- rownames(fData(spatial_data_geoDiff))[fData(spatial_data_geoDiff)$feature_high_fitNBth == 1]
+
+#ROIs_high <- sampleNames(spatial_data_geoDiff)[which((quantile(fData(spatial_data_geoDiff)[["para"]][, 1],
+#                                                  probs = 0.90, na.rm = TRUE) -   notes(spatial_data_geoDiff)[["threshold"]])*spatial_data_geoDiff$sizefact_fitNBth>2)]
+ROIs_high <- sampleNames(spatial_data_geoDiff)
+
+
+spatial_data_geoDiff <- fitPoisthNorm(object = spatial_data_geoDiff,
+                        ROIs_high = ROIs_high,
+                        features_high=features_high,features_all=features_all,
+                        threshold_mean = notes(spatial_data_geoDiff)[["bgMean"]],
+          
+                                      sizescalebythreshold = TRUE)
+
+# Only save high quality ROIs
+saveRDS(spatial_data_geoDiff[,ROIs_high],file = "results/GeoDiff_normalised_spatial_data.RDS")
+
+```
+
+# Assess effectiveness of normalisation procedure
+
+## Boxplots and density plots of normalised data
+
+One way to assess our normalisation methods is to compare the distributions of the boxplots across the slides (or other factors of interest) and also to view the density plots for our biological factors of interest (either region or staining). When the boxplots are compared TMM- and RUVseq- normalisation appear to perform best, followed by GeoDiff. The GeoDiff normalised data appears to result in some slight slide-specific differences. The Q3 normalisation looks too harsh and the negative probe normalisation performs almost as poorly as just using the raw data.
+
+::: panel-tabset
+## Raw data
+
+The raw data shows large difference in sequencing depths.
+
+```{r}
+#| label: fig-rawdataBoxplot
+#| fig-cap: Boxplot of raw data
+#| fig-width: 12
+#| fig-height: 5.5
+rawData <- log2(exprs(target_spatial_data)) %>%  as.data.frame() %>%
+  gather() 
+
+
+metaData <- pData(target_spatial_data)[,c("slide name","segment","Annotation")]
+labels <- make_clean_names(metaData$Annotation,case = "parsed")
+
+rawDataPlot <- merge(rawData,metaData,by.x="key",by.y="row.names") %>%
+ggplot(aes(x=key,y=value,fill=`slide name`)) + geom_boxplot() +  ylab("log2 raw counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=6)) 
+
+save_plot(filename = "figures/Normalisation/rawDataBoxplots.png",plot = rawDataPlot,
+          base_height = 10,base_width = 22, bg="white")
+
+rawDataPlot
+
+#| label: fig-rawdataDensity
+#| fig-cap: Density plot of raw data
+#| fig-width: 9
+#| fig-height: 6
+
+rawDataDensity <- rawData %>% merge(.,metaData,by.x="key",by.y="row.names") %>% 
+    ggplot(aes(x=value,color=key)) + geom_density() +  ylab("log2 raw counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))  + theme(legend.position = "hide") +  facet_wrap(~segment)
+
+save_plot(filename = "figures/Normalisation/rawDataDensity.png",plot = rawDataDensity,
+          base_height = 5.5, base_width = 13, bg="white")
+
+rawDataDensity
+
+
+```
+
+## TMM normalised
+
+```{r}
+#| label: fig-TMMBoxplot
+#| fig-cap: Boxplot of TMM-normalised data
+#| fig-width: 12
+#| fig-height: 5.5
+
+TMMNormalised <- cpm(TMM_norm_data, log=TRUE) %>%  as.data.frame() %>%
+  gather() 
+
+
+metaData <- pData(target_spatial_data)[,c("slide name","segment","Annotation","region")]
+labels <- make_clean_names(metaData$Annotation,case = "parsed")
+
+TMMNormalisedPlot <- merge(TMMNormalised,metaData,by.x="key",by.y="row.names") %>%
+  ggplot(aes(x=key,y=value,fill=`slide name`)) + geom_boxplot() +  ylab("log2 TMM counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=6)) 
+
+save_plot(filename = "figures/Normalisation/TMMNormalisedPlot.png",plot = TMMNormalisedPlot,
+          base_height = 5.5, base_width = 13, bg="white")
+
+
+TMMNormalisedPlot
+
+#| label: fig-TMMDensity
+#| fig-cap: Boxplot of upper quantile normalised data
+#| fig-width: 9
+#| fig-height: 6
+#| 
+TMMNormalisedDensity <- TMMNormalised %>% merge(.,metaData,by.x="key",by.y="row.names") %>% 
+  ggplot(aes(x=value,color=region)) + geom_density() +  ylab("log2 TMM counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + theme(legend.position = "right") + facet_wrap(~segment)
+
+save_plot(filename = "figures/Normalisation/TMMNormalisedDensity.png",plot = TMMNormalisedDensity,
+          base_height = 7,base_width = 10, bg="white")
+
+TMMNormalisedDensity
+
+```
+
+
+
+## Q3 normalised
+
+The Q3 normalised boxplots look reasonable.
+
+```{r}
+#| label: fig-Q3Boxplot
+#| fig-cap: Boxplot of upper quantile normalised data
+#| fig-width: 12
+#| fig-height: 5.5
+
+q3Normalised <- log2(assayDataElement(target_spatial_data, elt = "q_norm")) %>%  as.data.frame() %>%
+  gather() 
+
+
+metaData <- pData(target_spatial_data)[,c("slide name","segment","Annotation","region")]
+labels <- make_clean_names(metaData$Annotation,case = "parsed")
+
+q3NormalisedPlot <- merge(q3Normalised,metaData,by.x="key",by.y="row.names") %>%
+ggplot(aes(x=key,y=value,fill=`slide name`)) + geom_boxplot() +  ylab("log2 Q3 counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=6)) 
+
+save_plot(filename = "figures/Normalisation/Q3NormalisedPlot.png",plot = q3NormalisedPlot,
+          base_height = 5.5, base_width = 13, bg="white")
+
+
+q3NormalisedPlot
+
+#| label: fig-Q3Density
+#| fig-cap: Boxplot of upper quantile normalised data
+#| fig-width: 9
+#| fig-height: 6
+#| 
+q3NormalisedDensity <- q3Normalised %>% merge(.,metaData,by.x="key",by.y="row.names") %>% 
+    ggplot(aes(x=value,color=region)) + geom_density() +  ylab("log2 Q3 counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + theme(legend.position = "right") + facet_wrap(~segment)
+
+save_plot(filename = "figures/Normalisation/q3NormalisedDensity.png",plot = q3NormalisedDensity,
+          base_height = 7,base_width = 10, bg="white")
+
+q3NormalisedDensity
+
+```
+
+## Negative probe normalisation
+
+```{r}
+#| label: fig-negProbeBoxplot
+#| fig-cap: Boxplot of negative probe normalised data
+#| fig-width: 12
+#| fig-height: 5.5
+
+negProbeNormalised <- log2(assayDataElement(target_spatial_data, elt = "neg_norm")) %>%  as.data.frame() %>%
+  gather() 
+
+
+metaData <- pData(target_spatial_data)[,c("slide name","segment","Annotation","region")]
+labels <- make_clean_names(metaData$Annotation,case = "parsed")
+
+negProbeNormalisedPlot <- merge(negProbeNormalised,metaData,by.x="key",by.y="row.names") %>%
+  ggplot(aes(x=key,y=value,fill=`slide name`)) + geom_boxplot() +  ylab("log2 negProbe counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=6)) 
+
+save_plot(filename = "figures/Normalisation/negProbeNormalisedPlot.png",plot = negProbeNormalisedPlot,
+          base_height = 5.5, base_width = 13, bg="white")
+
+
+negProbeNormalisedPlot
+
+#| label: fig-negProbeDensity
+#| fig-cap: Boxplot of upper quantile normalised data
+#| fig-width: 9
+#| fig-height: 6
+#| 
+negProbeNormalisedDensity <- negProbeNormalised %>% merge(.,metaData,by.x="key",by.y="row.names") %>% 
+  ggplot(aes(x=value,color=region)) + geom_density() +  ylab("log2 negProbe counts") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + theme(legend.position = "right") + facet_wrap(~segment)
+
+save_plot(filename = "figures/Normalisation/negProbeNormalisedDensity.png",plot = negProbeNormalisedDensity,
+          base_height = 7,base_width = 10, bg="white")
+
+negProbeNormalisedDensity
+
+```
+
+## GeoDiff normalised
+
+The GeoDiff normalised data look smoother within the density plots.
+
+```{r}
+#| message: false
+#| warning: false
+#| label: fig-GeoDiffBoxplot
+#| fig-cap: Boxplot of GeoDiff normalised data
+#| fig-width: 12
+#| fig-height: 5.5
+geoDiffNormalised <- assayDataElement(spatial_data_geoDiff[,ROIs_high], elt = "normmat") %>%  as.data.frame() %>%  gather() 
+
+metaData <- pData(target_spatial_data)[,c("slide name","segment","Annotation","region")]
+
+labels <- make_clean_names(metaData$Annotation,case = "parsed")
+
+geoDiffNormalisedPlot <- merge(geoDiffNormalised,metaData,by.x="key",by.y="row.names") %>%
+ggplot(aes(x=key,y=value,fill=`slide name`)) + geom_boxplot() +  ylab("log Poisson Threshold Normalized values") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size=6)) 
+
+save_plot(filename = "figures/Normalisation/geoDiffNormalisedPlot.png",plot = geoDiffNormalisedPlot,
+          base_height = 5.5, base_width = 13, bg="white")
+
+
+geoDiffNormalisedPlot
+
+#| label: fig-GeoDiffDensity
+#| fig-cap: Denisty plots of GeoDiff normalised data
+#| fig-width: 9
+#| fig-height: 6
+
+geoDiffNormalisedDensity <- geoDiffNormalised %>% merge(.,metaData,by.x="key",by.y="row.names") %>% 
+    ggplot(aes(x=value,color=region)) + geom_density() +  ylab("log Poisson Threshold Normalized values") + xlab("Segment") + theme_cowplot() + scale_x_discrete(labels=labels) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + theme(legend.position = "right") + facet_wrap(~segment)
+
+save_plot(filename = "figures/Normalisation/geoDiffNormalisedDensity.png",plot = geoDiffNormalisedDensity,
+          base_height = 7,base_width = 10, bg="white")
+
+geoDiffNormalisedDensity
+
+```
+:::
+
+## Segment marker expression
+
+Expression of the known segment markers should correspond to the known segment labels if the data is correctly annotated and well normalised.
+
+::: panel-tabset
+## TMM
+
+```{r}
+#| label: fig-segmentMarkers-TMM
+#| fig-cap: Boxplots of segment markers to check TMM normalisation
+#| fig-width: 9
+#| fig-height: 6
+#| warning: false
+dat <- cpm(TMM_norm_data, log=TRUE)
+
+g <- dat[c("PECAM1","PTPRC"),]  %>%  as.data.frame() %>%  rownames_to_column("Gene") %>% reshape2::melt() %>%  merge(.,metaData,by.x="variable",by.y="row.names") %>%
+  ggplot(aes(x=segment,y=value,fill=segment)) + geom_boxplot() +  ylab("log2 Normalized values") + xlab("Segment") + theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + facet_wrap(~Gene)
+
+save_plot(g,filename = "figures/Normalisation/antibodyValues_TMM.png",bg="white")
+g
+```
+
+
+
+## Q3
+
+```{r}
+#| label: fig-segmentMarkers-Q3
+#| fig-cap: Boxplots of segment markers to check Q3 normalisation
+#| fig-width: 9
+#| fig-height: 6
+#| warning: false
+dat <- log2(assayDataElement(target_spatial_data, elt = "q_norm"))
+
+g <- dat[c("PECAM1","PTPRC"),]  %>%  as.data.frame() %>%  rownames_to_column("Gene") %>% reshape2::melt() %>%  merge(.,metaData,by.x="variable",by.y="row.names") %>%
+ggplot(aes(x=segment,y=value,fill=segment)) + geom_boxplot() +  ylab("log2 Normalized values") + xlab("Segment") + theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + facet_wrap(~Gene)
+
+save_plot(g,filename = "figures/Normalisation/antibodyValues_Q3.png",bg="white")
+g
+```
+
+## Negative probe normalisation
+
+```{r}
+#| label: fig-segmentMarkers-negProbe
+#| fig-cap: Boxplots of segment markers to check negProbe normalisation
+#| fig-width: 9
+#| fig-height: 6
+#| warning: false
+dat <- log2(assayDataElement(target_spatial_data, elt = "neg_norm"))
+
+g <- dat[c("PECAM1","PTPRC"),]  %>%  as.data.frame() %>%  rownames_to_column("Gene") %>% reshape2::melt() %>%  merge(.,metaData,by.x="variable",by.y="row.names") %>%
+  ggplot(aes(x=segment,y=value,fill=segment)) + geom_boxplot() +  ylab("log2 Normalized values") + xlab("Segment") + theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + facet_wrap(~Gene)
+
+save_plot(g,filename = "figures/Normalisation/antibodyValues_negProbe.png",bg="white")
+g
+```
+
+## GeoDiff
+
+```{r}
+#| label: fig-segmentMarkers-GeoDiff
+#| fig-cap: Boxplots of segment markers to check GeoDiff normalisation
+#| fig-width: 9
+#| fig-height: 6
+#| warning: false
+
+dat <- assayDataElement(spatial_data_geoDiff[,ROIs_high], elt = "normmat")
+
+g <- dat[c("PECAM1","PTPRC"),]  %>%  as.data.frame() %>%  rownames_to_column("Gene") %>% reshape2::melt() %>%  merge(.,metaData,by.x="variable",by.y="row.names") %>%
+ggplot(aes(x=segment,y=value,fill=segment)) + geom_boxplot() +  ylab("log2 Normalized values") + xlab("Segment") + theme_cowplot() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + facet_wrap(~Gene)
+
+save_plot(g,filename = "figures/Normalisation/antibodyValues_GeoDiff.png",bg="white")
+g
+```
+:::
+
+Assessing a combination of factors TMM and GeoDiff seem like they might be most appropriate to analyse this data.
+
+## References
+
+::: {#refs}
+:::
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

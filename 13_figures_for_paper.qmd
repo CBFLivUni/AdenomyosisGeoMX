@@ -1,0 +1,281 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Figure assembly"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+# Figures
+
+## Load libraries
+
+```{r}
+#| output: false
+#| output: false
+library(tidyverse)
+library(cowplot)
+library(ggpubr)
+library(patchwork)
+source("src/palettes.R")
+
+```
+
+
+## Figure 1
+
+```{r}
+#| output: false
+
+fig1A <- read_rds("figures/paper/fig1A.rds")
+fig1B <- read_rds("figures/paper/fig1B.rds")
+fig1B_extra <- read_rds("figures/paper/fig1B_extra.rds")
+
+```
+
+```{r}
+
+layout <- "AAAAABBB
+AAAAABBB
+AAAAABBB
+AAAAABBB
+AAAAABBB
+AAAAABBB
+AAAAABBB
+AAAAA###
+AAAAA###
+AAAAA###
+AAAAA###
+AAAAA###
+AAAAA###"
+    
+fig1 <- fig1A + fig1B_extra +
+  plot_layout(design = layout)
+
+
+save_plot(filename = "figures/paper/figure1_wide.pdf", plot = fig1, base_height = 16.5, base_width = 18, bg="white")
+
+```
+
+```{r}
+
+layout <- "AAAAA
+AAAAA
+AAAAA
+BBBBB"
+    
+fig1 <- fig1A + fig1B +
+  plot_layout(design = layout)
+
+
+save_plot(filename = "figures/paper/figure1_tall.pdf", plot = fig1, base_height = 22, base_width = 12, bg="white")
+
+```
+## Figure 3
+
+```{r}
+
+fig3A <- read_rds("figures/paper/fig3A.rds")
+fig3B <- read_rds("figures/paper/fig3B.rds")
+fig3C <- read_rds("figures/paper/fig3C.rds")
+fig3D <- read_rds("figures/paper/fig3D.rds")
+
+
+fig3C <- fig3C + scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+fig3D <- fig3D +  theme(axis.title.x=element_blank(),
+          axis.text.x = element_text(angle = 40,  hjust=1))
+
+```
+
+```{r}
+
+layout <- "AAAAAAA
+BBBBBBB
+C######
+D######"
+    
+fig3 <- fig3A + fig3B + fig3C + fig3D +
+  plot_layout(design = layout)
+
+
+save_plot(filename = "figures/paper/figure3.pdf", plot = fig3, base_height = 19, base_width = 20, bg="white")
+
+```
+
+
+```{r}
+
+save_plot(filename = "figures/paper/figure3C.pdf", plot = fig3C, base_height = 4, base_width = 4, bg="white")
+save_plot(filename = "figures/paper/figure3D.pdf", plot = fig3D, base_height = 3, base_width = 5, bg="white")
+
+```
+
+
+## Figure 2
+
+```{r}
+
+fig2A <- read_rds("figures/paper/fig2A_long.rds")
+fig2B <- read_rds("figures/paper/fig2B.rds")
+
+
+```
+
+```{r}
+
+layout <- "AAABBB
+CCCDDD
+EEEFFF
+GGGHHH
+II####"
+
+fig2 <- fig2A + fig2B +
+  plot_layout(design = layout)
+
+```
+
+
+```{r}
+
+save_plot(filename = "figures/paper/figure2A.pdf", plot = fig2A, base_height = 9, base_width = 9, bg="white")
+save_plot(filename = "figures/paper/figure2B.pdf", plot = fig2B, base_height = 4.5, base_width = 5, bg="white")
+
+```
+
+## Figure 5
+
+```{r}
+
+fig5A <- read_rds("figures/paper/fig5A.rds")
+fig5B <- read_rds("figures/paper/fig5B.rds")
+
+fig5A <- fig5A +
+  theme(legend.position = "none")
+
+fig5B <- fig5B + scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+
+```
+
+```{r}
+
+cd3cd4 <- read.csv("data/CD3_CD4.csv")
+cd3cd8 <- read.csv("data/CD3_CD8.csv")
+cd20 <- read.csv("data/CD20.csv")
+
+cd3cd4$Region <- gsub("F", "Functionalis", gsub("B", "Basalis", gsub("A", "Adenomyosis", cd3cd4$Region)))
+cd3cd8$Region <- gsub("F", "Functionalis", gsub("B", "Basalis", gsub("A", "Adenomyosis", cd3cd8$Region)))
+cd20$Region <- gsub("F", "Functionalis", gsub("B", "Basalis", gsub("A", "Adenomyosis", cd20$Region)))
+
+
+cd3cd4$Region <- factor(cd3cd4$Region, levels=c("Functionalis", "Basalis", "Adenomyosis"))
+cd3cd8$Region <- factor(cd3cd8$Region, levels=c("Functionalis", "Basalis", "Adenomyosis"))
+cd20$Region <- factor(cd20$Region, levels=c("Functionalis", "Basalis", "Adenomyosis"))
+
+```
+
+```{r}
+
+comparisons <- list(c("Adenomyosis", "Basalis"), 
+                    c("Adenomyosis", "Functionalis"), 
+                    c("Basalis", "Functionalis"))
+
+
+cd3cd4_plot <- ggplot(cd3cd4, aes(x=Region, y=Percent_positive_CD3_CD4_total_cells, fill=Region)) +
+  #geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.4, alpha = 0.9, na.rm = TRUE)+
+  geom_point(colour = "#333333", position = ggplot2::position_jitterdodge(dodge.width = 1),
+               size = 1.4,
+               stroke = 0,
+               show.legend = NA,
+               na.rm = TRUE)+
+  scale_fill_manual(values = project_palettes$region_colours) + 
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  stat_compare_means(comparisons = comparisons, method = "t.test") +  
+  theme_cowplot()+
+  ylab("% Positive CD3/CD4+") +
+  xlab("") +
+  theme(legend.position = "none")
+
+
+cd3cd8_plot <- ggplot(cd3cd8, aes(x=Region, y=Percent_positive_CD3_CD8_total_cells, fill=Region)) +
+  #geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.4, alpha = 0.9, na.rm = TRUE)+
+  geom_point(colour = "#333333", position = ggplot2::position_jitterdodge(dodge.width = 1),
+               size = 1.4,
+               stroke = 0,
+               show.legend = NA,
+               na.rm = TRUE)+
+  scale_fill_manual(values = project_palettes$region_colours) + 
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  stat_compare_means(comparisons = comparisons, method = "t.test") +  
+  theme_cowplot()+
+  ylab("% Positive CD3/CD8+") +
+  xlab("") +
+  theme(legend.position = "none")
+
+
+cd20_plot <- ggplot(cd20, aes(x=Region, y=Score, fill=Region)) +
+  #geom_violin(width=0.9, alpha = 0.3, color = NA) +
+  geom_boxplot(width = 0.4, alpha = 0.9, na.rm = TRUE)+
+  geom_point(colour = "#333333", position = ggplot2::position_jitterdodge(dodge.width = 1),
+               size = 1.4,
+               stroke = 0,
+               show.legend = NA,
+               na.rm = TRUE)+
+  scale_fill_manual(values = project_palettes$region_colours) + 
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  stat_compare_means(comparisons = comparisons, method = "t.test") +  
+  theme_cowplot()+
+  ylab("% Positive CD20+") +
+  xlab("") +
+  theme(legend.position = "none")
+
+
+
+fig5C <- cd3cd4_plot + cd3cd8_plot + cd20_plot
+
+write_rds(fig5C, "figures/paper/fig5C.rds")
+save_plot(filename = "figures/paper/figure5C.pdf", plot = fig5C, base_height = 3.5, base_width = 10, bg="white")
+
+```
+
+```{r}
+
+layout <- "AAAAAAB
+CCCCCCC"
+    
+fig5 <- fig5A + fig5B + fig5C + 
+  plot_layout(design = layout)
+
+
+save_plot(filename = "figures/paper/figure5.pdf", plot = fig5, base_height = 10, base_width = 10, bg="white")
+
+save_plot(filename = "figures/paper/figure5A.pdf", plot = fig5A, base_height = 5, base_width = 5.5, bg="white")
+save_plot(filename = "figures/paper/figure5A_wide.pdf", plot = fig5A, base_height = 5, base_width = 9, bg="white")
+save_plot(filename = "figures/paper/figure5B.pdf", plot = fig5B, base_height = 4.5, base_width = 3.5, bg="white")
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

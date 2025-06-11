@@ -1,0 +1,688 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Exploratory data analysis"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+    code-fold: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Exploratory Data analysis
+
+This notebook contains the exploratory data analysis (EDA), and runs principal component analysis and t-SNE to check the grouping of samples and explore the correlation of known experimental factors with drivers of the variation observed in the data.
+
+## Load libraries
+
+```{r}
+#| output: false
+#| message: false
+#| warning: false
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(cowplot)
+library(PCAtools) # pca & correlation plot
+library(viridis) # colour schemes
+library(gplots)
+library(reshape2)
+library(Rtsne)
+library(RColorBrewer)
+library(wesanderson)
+library(edgeR)
+library(DESeq2)
+
+source("src/utilityFunctions.R")
+
+```
+
+## Load the normalised data
+
+The data from all the normalisation approaches is used.
+
+```{r}
+
+target_spatialData <- readRDS("results/normalised_spatial_data.RDS")
+target_spatialData_GeoDiff <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+TMM_norm_data <- readRDS("results/TMM_normalised_spatial_data.RDS")
+
+```
+
+```{r}
+
+# Colour palettes
+region_colours <- c("#2dc4cc", "#e0690d", "#7570B3", "#E7298A", "#66A61E", "#E6AB02")
+#segment_colours <- c("#FF8E73", "#2B6FAB", "#A6EF4B", "#FFA8FF")
+segment_colours <- c("#fcb02b", "#0F5A94", "#BEC100", "#b52658")
+patient_colours <- c("#7FC97F", "#BEAED4", "#FDC086", "#FFFF99", "#386CB0", "#F0027F", "#8DD3C7", "#7570B3", "#ffabd5", "#FB8072")
+slide_colours <- c("#FF0000", "#00A08A", "#F2AD00", "#5BBCD6")
+
+
+```
+
+# Dimensionality reduction
+
+## PCA
+
+PCA is used to understand the experimental and technical factors explaining the variance in the data. It is worth noting that RUVseq has already removed the variation resulting from slide & patient so this must be considered when assessing the EDA results and in the downstream statistical models. 
+
+For each normalisation method a correlation plot is included, correlating features in the phenotype table with each principal component (PC). By doing this we can see which PCs most strongly correlate with our biological features of interest. In addition to the correlation plot, a pairsplot and several PCA plots are included. The pairsplot allows us to visualise each combination of the first 6 principal components, we colour the dots by region so we can see at a glance if any principal components capture separation by region. 
+The PCA dot plots then plot PCs that capture relevant separation by technical (patient/slide) or biological effects (stain/region). 
+
+Generally, in the plots below we see that cell type mostly strongly seems to drive the separation. The PanCK (i.e. the epithelium) cells separate out more strongly from the other cell types. This doesn't mean there aren't differences between the other cell types, just that the difference between the PanCK cells and other cell types contributes more strongly to the overall variance. 
+
+::: panel-tabset
+### TMM normalisation
+
+```{r}
+#| message: false
+#| warning: false
+#| label: fig-Eigencor-TMM
+#| fig-cap: Correlation of PCs with features in phenotype table
+#| fig-width: 10
+#| fig-height: 4.5
+
+
+# Read in data
+normalisedData <- cpm(TMM_norm_data, log=TRUE)
+pheno <- TMM_norm_data[["samples"]]
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+# Eigencor plot
+corplot <- eigencorplotPCA(pca_res, c("segment", "area", "nuclei.count", "region", "Sample.ID", "Annotation", "GeneDetectionRate", "slide.name", "lib.size", "norm.factors"))
+
+corplot
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.height = 9, fig.width = 9, fig.align="center"}
+
+pairs_plot <- pairsplot(pca_res,
+                        components = getComponents(pca_res, seq_len(6)), 
+                        colby = "region",
+                        colkey = c("Adenomyosis" = "#2dc4cc", "Basalis" = "#e0690d", "Functionalis" = "#7570B3", "LE" = "#E7298A", "Myometrium near adeno" = "#66A61E", "Myometrium near adeno" = "#E6AB02"),
+                        pointSize = 1)
+
+
+save_plot(filename = "figures/EDA/TMM_pairsplot.png", plot = pairs_plot, base_height = 10,base_width = 11, bg="white")
+
+
+pairs_plot
+
+```
+
+
+```{r}
+#| label: fig-PCAQC-TMM
+#| fig-cap: PCA of the spatial transciptomics data
+#| fig-width: 10
+#| fig-height: 10
+
+
+p1 <- plotPCA(pca_res,
+              PCs=c(1,2),
+              colours = region_colours,
+              colour.data=factor(pheno$region),
+              shape.data=factor(pheno$segment),
+              colour.lab="Region",
+              sample.lab=F
+)
+
+
+p2<- plotPCA(pca_res,
+             PCs=c(1,2),
+             colours = patient_colours,
+             colour.data=factor(pheno$`Sample.ID`),
+             shape.data=factor(pheno$segment),
+             colour.lab="Patient ID",
+             sample.lab=F
+)
+
+
+
+p3<- plotPCA(pca_res,
+             PCs=c(1,2),
+             colours = segment_colours,
+             colour.data=factor(pheno$segment),
+             colour.lab="Segment",
+             sample.lab=F
+)
+
+p4 <- plotPCA(pca_res,
+              PCs=c(3,6),
+              colours = region_colours,
+              colour.data=factor(pheno$region),
+              #shape.data=factor(pheno$segment),
+              colour.lab="Region",
+              sample.lab=F
+)
+
+
+p4 <- p4 + stat_ellipse()
+
+
+p5 <- plotPCA(pca_res,
+              PCs=c(1,3),
+              colours = slide_colours,
+              colour.data=factor(pheno$`slide.name`),
+              shape.data=factor(pheno$segment),
+              colour.lab="Slide",
+              sample.lab=F
+)
+
+
+p6 <- screeplot(pca_res,
+                components=1:20,
+                axisLabSize = 18,
+                title = "") + theme_cowplot() 
+
+
+
+pca_fig <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 3,labels = "AUTO")
+pca_fig2 <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 2,labels = "AUTO")
+
+
+save_plot(filename = "figures/EDA/TMM_PCA.png", plot = pca_fig, base_height = 9,base_width = 17.5, bg="white")
+
+pca_fig2
+
+```
+
+```{r}
+
+pca_fig <- plot_grid(p3,p4, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/TMM_PCA_biological_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+
+pca_fig <- plot_grid(p2,p5, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/TMM_PCA_technical_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+```
+
+
+### Q3 normalisation
+
+```{r}
+#| message: false
+#| warning: false
+#| label: fig-Eigencor-Q3
+#| fig-cap: Correlation of PCs with features in phenotype table
+#| fig-width: 10
+#| fig-height: 4.5
+
+
+# Read in data
+normalisedData <- log2(assayDataElement(target_spatialData , elt = "q_norm"))
+pheno <- pData(target_spatialData)
+
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+
+# Eigencor plot
+corplot <- eigencorplotPCA(pca_res, c("segment", "area", "nuclei count", "region", "Sample ID", "Annotation", "GeneDetectionRate", "slide name"))
+
+
+corplot
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.height = 9, fig.width = 9, fig.align="center"}
+
+pairs_plot <- pairsplot(pca_res,
+                        components = getComponents(pca_res, seq_len(6)), 
+                               colby = "region",
+                               colkey = c("Adenomyosis" = "#2dc4cc", "Basalis" = "#e0690d", "Functionalis" = "#7570B3", "LE" = "#E7298A", "Myometrium near adeno" = "#66A61E", "Myometrium near adeno" = "#E6AB02"),
+                               pointSize = 1)
+
+
+save_plot(filename = "figures/EDA/Q3_pairsplot.png", plot = pairs_plot, base_height = 10,base_width = 11, bg="white")
+
+
+pairs_plot
+
+```
+
+
+```{r}
+#| label: fig-PCAQC-Q3
+#| fig-cap: PCA of the spatial transciptomics data
+#| fig-width: 10
+#| fig-height: 10
+
+# PCA plots
+p1 <- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = region_colours,
+        colour.data=factor(pheno$region),
+        shape.data=factor(pheno$segment),
+        colour.lab="Region",
+        sample.lab=F
+        )
+
+
+p2<- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = patient_colours,
+        colour.data=factor(pheno$`Sample ID`),
+        shape.data=factor(pheno$segment),
+        colour.lab="Patient ID",
+        sample.lab=F
+        )
+
+
+
+p3<- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = segment_colours,
+        colour.data=factor(pheno$segment),
+        colour.lab="Segment",
+        sample.lab=F
+        )
+
+p4 <- plotPCA(pca_res,
+        PCs=c(3,4),
+        colours = region_colours,
+        colour.data=factor(pheno$region),
+        #shape.data=factor(pheno$segment),
+        colour.lab="Region",
+        sample.lab=F
+        )
+
+p4 <- p4 + stat_ellipse()
+#p4+stat_ellipse(geom = "polygon",
+                #aes(fill = Region), 
+                #alpha = 0.25)
+
+p5 <- plotPCA(pca_res,
+        PCs=c(1,3),
+        colours = slide_colours,
+        colour.data=factor(pheno$`slide name`),
+        shape.data=factor(pheno$segment),
+        colour.lab="Slide",
+        sample.lab=F
+        )
+
+
+p6 <- screeplot(pca_res,
+      components=1:20,
+      axisLabSize = 18,
+      title = "") + theme_cowplot() 
+
+
+
+pca_fig <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 3,labels = "AUTO")
+pca_fig2 <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 2,labels = "AUTO")
+
+
+save_plot(filename = "figures/EDA/Q3_PCA.png", plot = pca_fig, base_height = 9,base_width = 17.5, bg="white")
+
+
+pca_fig2
+
+```
+```{r}
+
+pca_fig <- plot_grid(p3,p4, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/Q3_PCA_biological_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+
+
+pca_fig <- plot_grid(p2,p5, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/Q3_PCA_technical_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+```
+
+### GeoDiff normalisation
+
+The PCA plot for the GeoDiff normalisation is overall similar in structure to the Q3 normalisation.
+
+```{r}
+#| message: false
+#| warning: false
+#| label: fig-Eigencor-GeoDiff
+#| fig-cap: Correlation of PCs with features in phenotype table
+#| fig-width: 10
+#| fig-height: 4.5
+
+normalisedData <- na.omit(assayDataElement(target_spatialData_GeoDiff , elt = "normmat"))
+pheno <- pData(target_spatialData_GeoDiff)
+
+
+# Generate PCA results
+pca_res <- pca(na.omit(normalisedData), metadata = pheno, scale = TRUE, center = TRUE)
+pca_df_out <- as.data.frame(pca_res$rotated)
+
+
+# Eigencor plot
+corplot <- eigencorplotPCA(pca_res, c("segment", "area", "nuclei count", "region", "Sample ID", "Annotation", "slide name"))
+
+
+
+corplot
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.height = 9, fig.width = 9, fig.align="center"}
+
+pairs_plot <- pairsplot(pca_res,
+                        components = getComponents(pca_res, seq_len(6)), 
+                               colby = "region",
+                               colkey = c("Adenomyosis" = "#2dc4cc", "Basalis" = "#e0690d", "Functionalis" = "#7570B3", "LE" = "#E7298A", "Myometrium_near_adeno" = "#66A61E", "Myometrium_near_adeno" = "#E6AB02"),
+                               pointSize = 1)
+
+
+save_plot(filename = "figures/EDA/GeoDiff_pairsplot.png", plot = pairs_plot, base_height = 10,base_width = 11, bg="white")
+
+
+pairs_plot
+
+```
+
+
+```{r}
+#| label: fig-PCAQC-GeoDiff
+#| fig-cap: PCA of the spatial transciptomics data
+#| fig-width: 10
+#| fig-height: 10.5
+
+# PCA plots
+p1 <- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = region_colours,
+        colour.data=factor(pheno$region),
+        shape.data=factor(pheno$segment),
+        colour.lab="Region",
+        sample.lab=F
+        )
+
+
+p2<- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = patient_colours,
+        colour.data=factor(pheno$`Sample ID`),
+        shape.data=factor(pheno$segment),
+        colour.lab="Patient ID",
+        sample.lab=F
+        )
+
+
+
+p3<- plotPCA(pca_res,
+        PCs=c(1,2),
+        colours = segment_colours,
+        colour.data=factor(pheno$segment),
+        colour.lab="Segment",
+        sample.lab=F
+        )
+
+p4 <- plotPCA(pca_res,
+        PCs=c(3,4),
+        colours = region_colours,
+        colour.data=factor(pheno$region),
+        #shape.data=factor(pheno$segment),
+        colour.lab="Region",
+        sample.lab=F
+        )
+
+p4 <- p4 + stat_ellipse()
+#p4+stat_ellipse(geom = "polygon",
+                #aes(fill = Region), 
+                #alpha = 0.25)
+
+p5 <- plotPCA(pca_res,
+        PCs=c(1,3),
+        colours = slide_colours,
+        colour.data=factor(pheno$`slide name`),
+        shape.data=factor(pheno$segment),
+        colour.lab="Slide",
+        sample.lab=F
+        )
+
+
+p6 <- screeplot(pca_res,
+      components=1:20,
+      axisLabSize = 18,
+      title = "") + theme_cowplot() 
+
+
+
+pca_fig <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 3,labels = "AUTO")
+pca_fig2 <- plot_grid(p1,p2,p3,p4,p5,p6, ncol = 2,labels = "AUTO")
+
+
+save_plot(filename = "figures/EDA/GeoDiff_PCA2.png", plot = pca_fig, base_height = 9,base_width = 17.5, bg="white")
+
+pca_fig2
+
+```
+
+```{r}
+
+pca_fig <- plot_grid(p3,p4, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/GeoDiff_PCA_biological_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+
+pca_fig <- plot_grid(p2,p5, ncol = 2,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/GeoDiff_PCA_technical_effects.png", plot = pca_fig, base_height = 4.5,base_width = 12, bg="white")
+
+```
+:::
+
+
+## t-SNE 
+
+t-SNE is a non-linear alternative to PCA. Similar separation of samples by region and cell types is also seen. Overall, the GeoDiff data appears to separate out mostly by cell type on the t-SNE plots, though patient ID and slide ID obviously contribute to the separation too. 
+
+::: panel-tabset
+
+### TMM normalisation
+
+```{r}
+#| label: fig-TSNE-TMM
+#| fig-cap: t-sne plot of the spatial transciptomics data
+#| fig-width: 6.5
+#| fig-height: 10.5
+
+set.seed(42)
+
+
+normalisedData <- cpm(TMM_norm_data, log=TRUE)
+pheno <- TMM_norm_data[["samples"]]
+
+tSNEFit <- Rtsne(t(normalisedData), scale = TRUE,perplexity = 2)
+
+tSNEData <- tSNEFit$Y %>% 
+  as.data.frame() %>%
+  rename(tSNE1="V1",
+         tSNE2="V2") %>%
+  mutate(ID=row_number())
+
+
+t1 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$region), shape=factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=region_colours) +
+    theme_cowplot() + 
+    labs(colour = "Region", shape = "Staining")
+
+
+t2 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=segment_colours) +
+    theme_cowplot() + 
+    labs(colour = "Staining")
+
+
+t3 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$`Sample.ID`), shape = factor(pheno$`slide.name`))) +
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=patient_colours) +
+    theme_cowplot() + 
+    labs(colour = "Patient", shape = "Slide")
+
+
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 3,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/tsne_TMM.png",plot = tsnePlot,base_height = 4.5,base_width = 17, bg="white")
+
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 1,labels = "AUTO")
+tsnePlot
+
+```
+
+
+### Q3 normalisation
+
+```{r}
+#| label: fig-Q3
+#| fig-cap: t-sne plot of the spatial transciptomics data
+#| fig-width: 6.5
+#| fig-height: 10.5
+
+set.seed(42)
+
+
+normalisedData <- log2(assayDataElement(target_spatialData , elt = "q_norm"))
+pheno <- pData(target_spatialData)
+
+
+tSNEFit <- Rtsne(t(normalisedData), scale = TRUE,perplexity = 2)
+
+tSNEData <- tSNEFit$Y %>% 
+  as.data.frame() %>%
+  rename(tSNE1="V1",
+         tSNE2="V2") %>%
+  mutate(ID=row_number())
+
+
+t1 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$region), shape=factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=region_colours) +
+    theme_cowplot() + 
+    labs(colour = "Region", shape = "Staining")
+
+
+t2 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=segment_colours) +
+    theme_cowplot() + 
+    labs(colour = "Staining")
+
+
+t3 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$`Sample ID`), shape = factor(pheno$`slide name`))) +
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=patient_colours) +
+    theme_cowplot() + 
+    labs(colour = "Patient", shape = "Slide")
+
+
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 3,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/tsne_Q3.png",plot = tsnePlot,base_height = 4.5,base_width = 17, bg="white")
+
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 1,labels = "AUTO")
+tsnePlot
+
+```
+
+### GeoDiff normalisation
+
+```{r}
+#| label: fig-TSNE-GeoDiff
+#| fig-cap: t-sne plot of the spatial transciptomics data
+#| fig-width: 6.5
+#| fig-height: 10.5
+
+set.seed(42)
+
+
+normalisedData <- na.omit(assayDataElement(target_spatialData_GeoDiff , elt = "normmat"))
+pheno <- pData(target_spatialData_GeoDiff)
+
+tSNEFit <- Rtsne(t(normalisedData), scale = TRUE,perplexity = 2)
+
+tSNEData <- tSNEFit$Y %>% 
+  as.data.frame() %>%
+  rename(tSNE1="V1",
+         tSNE2="V2") %>%
+  mutate(ID=row_number())
+
+
+t1 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$region), shape=factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=region_colours) +
+    theme_cowplot() + 
+    labs(colour = "Region", shape = "Staining")
+
+
+t2 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$segment))) +       
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=segment_colours) +
+    theme_cowplot() + 
+    labs(colour = "Staining")
+
+
+t3 <- ggplot(tSNEData, aes(x=tSNE1, y=tSNE2, colour = factor(pheno$`Sample ID`), shape = factor(pheno$`slide name`))) +
+  geom_point(size = 3.5) +
+  scale_shape_manual(values=c(19,15,17,18)) +
+  scale_color_manual(values=patient_colours) +
+    theme_cowplot() + 
+    labs(colour = "Patient", shape = "Slide")
+
+
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 3,labels = "AUTO")
+
+save_plot(filename = "figures/EDA/tsne_GeoDiff.png",plot = tsnePlot,base_height = 4.5,base_width = 17, bg="white")
+
+tsnePlot <- plot_grid(t1,t2,t3,ncol = 1,labels = "AUTO")
+tsnePlot
+
+```
+
+:::
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::

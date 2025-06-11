@@ -1,0 +1,703 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Differential expression - results"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+
+# Differential expression results
+
+This notebook only reports on the results for the GeoDiff normalised limma-trend model as this was taken forward after initial benchmarking and assessment of results. The optimisation/results of the other models can be seen in '05_differential_expression_optimisation.qmd'. 
+
+# Load libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(factoextra)
+library(reshape2)
+library(pheatmap)
+library(writexl)
+library(ggrepel)
+library(edgeR)
+library(GeoDiff)
+library(janitor)
+library(VennDiagram)
+library(cowplot)
+library(ggpubr)
+source("src/utilityFunctions.R")
+source("src/palettes.R") # additional colour palettes
+```
+
+
+# Read in data
+
+```{r}
+
+# GeoDiff normalised data
+target_spatial_data_geoDiff  <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+
+limma_GeoDiff_results <- readRDS("results/differential_expression/limma_GeoDiff_pairwise_comparisons.RDS")
+
+```
+
+
+# Boxplots for high-confidence genes (conserved across statistical models)
+
+```{r}
+
+model_intersects  <- readRDS("results/differential_expression/robust_DE_genes_per_contrast.rds")
+
+```
+
+
+## GeoDiff normalised data
+
+### CD45_Adenomyosis-CD45_Functionalis
+
+```{r}
+
+CD45_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["CD45_Adenomyosis-CD45_Functionalis"]],
+                                                  plotBoxPlot,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat") 
+
+
+CD45_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  CD45_adenomyosis_vs_functionalis_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD45_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/CD45_adenomyosis_vs_functionalis_box_plots_all_segments.pdf",
+          base_height = 17, base_width = 18,bg="white")
+
+
+CD45_adenomyosis_vs_functionalis_box_plot
+
+```
+
+```{r}
+
+CD45_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["CD45_Adenomyosis-CD45_Functionalis"]],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="CD45") 
+
+
+CD45_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  CD45_adenomyosis_vs_functionalis_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD45_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/CD45_adenomyosis_vs_functionalis_box_plots.pdf",
+          base_height = 9, base_width = 8,bg="white")
+
+
+CD45_adenomyosis_vs_functionalis_box_plot
+
+```
+
+
+### Stroma_Adenomyosis-Stroma_Functionalis
+
+```{r}
+
+stroma_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["Stroma_Adenomyosis-Stroma_Functionalis"]][1:8],
+                                                    plotBoxPlot,
+                                                    target_spatial_data_geoDiff,
+                                                    elt="normmat") 
+
+
+stroma_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  stroma_adenomyosis_vs_functionalis_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = stroma_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/stroma_adenomyosis_vs_functionalis_box_plots_all_segments.pdf",
+          base_height = 17, base_width = 18,bg="white")
+
+
+stroma_adenomyosis_vs_functionalis_box_plot
+
+```
+
+```{r}
+
+stroma_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["Stroma_Adenomyosis-Stroma_Functionalis"]][1:9],
+                                                    plotBoxPlotSegment,
+                                                    target_spatial_data_geoDiff,
+                                                    elt="normmat",
+                                                    segment="Stroma") 
+
+
+stroma_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  stroma_adenomyosis_vs_functionalis_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = stroma_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/stroma_adenomyosis_vs_functionalis_box_plots.pdf",
+          base_height = 9, base_width = 8,bg="white")
+
+
+stroma_adenomyosis_vs_functionalis_box_plot
+
+```
+
+### PanCK_Adenomyosis-PanCK_Functionalis
+
+```{r}
+
+panCK_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["PanCK_Adenomyosis-PanCK_Functionalis"]][1:8],
+                                                   plotBoxPlot,
+                                                   target_spatial_data_geoDiff,
+                                                   elt="normmat") 
+
+
+panCK_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  panCK_adenomyosis_vs_functionalis_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = panCK_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/panCK_adenomyosis_vs_functionalis_box_plots_all_segments.pdf",
+          base_height = 17, base_width = 18,bg="white")
+
+panCK_adenomyosis_vs_functionalis_box_plot
+
+```
+
+```{r}
+
+panCK_adenomyosis_vs_functionalis_box_plots <- map(model_intersects[["PanCK_Adenomyosis-PanCK_Functionalis"]][1:9],
+                                                   plotBoxPlotSegment,
+                                                   target_spatial_data_geoDiff,
+                                                   elt="normmat",
+                                                   segment="PanCK") 
+
+
+panCK_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  panCK_adenomyosis_vs_functionalis_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = panCK_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/panCK_adenomyosis_vs_functionalis_box_plots.pdf",
+          base_height = 9, base_width = 8,bg="white")
+
+panCK_adenomyosis_vs_functionalis_box_plot
+
+```
+
+### CD45_Adenomyosis-CD45_Basalis
+
+```{r}
+
+c45_adenomyosis_vs_basalis_box_plots <- map(model_intersects[["CD45_Adenomyosis-CD45_Basalis"]],
+                                            plotBoxPlot,
+                                            target_spatial_data_geoDiff,
+                                            elt="normmat") 
+
+
+c45_adenomyosis_vs_basalis_box_plot <- patchwork::wrap_plots(
+  c45_adenomyosis_vs_basalis_box_plots,
+  ncol = 1) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = c45_adenomyosis_vs_basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/c45_adenomyosis_vs_basalis_box_plots_all_segments.pdf",
+          base_height = 12, base_width = 12,bg="white")
+
+c45_adenomyosis_vs_basalis_box_plot
+
+```
+
+```{r}
+
+c45_adenomyosis_vs_basalis_box_plots <- map(model_intersects[["CD45_Adenomyosis-CD45_Basalis"]],
+                                            plotBoxPlotSegment,
+                                            target_spatial_data_geoDiff,
+                                            elt="normmat",
+                                            segment="CD45") 
+
+
+c45_adenomyosis_vs_basalis_box_plot <- patchwork::wrap_plots(
+  c45_adenomyosis_vs_basalis_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = c45_adenomyosis_vs_basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/c45_adenomyosis_vs_basalis_box_plots.pdf",
+          base_height = 3, base_width = 8,bg="white")
+
+c45_adenomyosis_vs_basalis_box_plot
+
+```
+
+### Stroma_Adenomyosis-Stroma_Basalis
+
+```{r}
+
+stroma_adenomyosis_vs_basalis_box_plots <- map(model_intersects[["Stroma_Adenomyosis-Stroma_Basalis"]][1:8],
+                                               plotBoxPlot,
+                                               target_spatial_data_geoDiff,
+                                               elt="normmat") 
+
+
+c45_adenomyosis_vs_basalis_box_plot <- patchwork::wrap_plots(
+  stroma_adenomyosis_vs_basalis_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = c45_adenomyosis_vs_basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/stroma_adenomyosis_vs_basalis_box_plots_all_segments.pdf",
+          base_height = 17, base_width = 18,bg="white")
+
+
+c45_adenomyosis_vs_basalis_box_plot
+
+```
+
+```{r}
+
+stroma_adenomyosis_vs_basalis_box_plots <- map(model_intersects[["Stroma_Adenomyosis-Stroma_Basalis"]][1:9],
+                                               plotBoxPlotSegment,
+                                               target_spatial_data_geoDiff,
+                                               elt="normmat",
+                                               segment="Stroma") 
+
+
+c45_adenomyosis_vs_basalis_box_plot <- patchwork::wrap_plots(
+  stroma_adenomyosis_vs_basalis_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = c45_adenomyosis_vs_basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/stroma_adenomyosis_vs_basalis_box_plots.pdf",
+          base_height = 9, base_width = 8,bg="white")
+
+
+c45_adenomyosis_vs_basalis_box_plot
+
+```
+
+
+
+# Ciliation genes
+
+```{r}
+
+ciliation_genes_box_plots <- map(c("RSPH1", "TEKT2", "CFAP43", "CFAP46", "LRRC49", "HOATZ", "CFAP157", "DNAI2", "ODAD1", "DNAH5", "CFAP65", "SPAG17"),
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="PanCK") 
+
+
+ciliation_genes_box_plot <- patchwork::wrap_plots(
+  ciliation_genes_box_plots,
+  ncol = 3) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = ciliation_genes_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/pathway_genes/ciliation_genes_box_plots.pdf",
+          base_height = 13, base_width = 10,bg="white")
+
+
+ciliation_genes_box_plot
+
+```
+
+
+# Olfactory genes
+
+```{r}
+
+olfactory_genes_box_plots <- map(c("OR2AG2", "OR10G4"),
+                                                  plotBoxPlot,
+                                                  target_spatial_data_geoDiff) 
+
+
+olfactory_genes_box_plot <- patchwork::wrap_plots(
+  olfactory_genes_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = olfactory_genes_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/pathway_genes/olfactory_genes_box_plots.pdf",
+          base_height = 5, base_width = 18,bg="white")
+
+```
+
+
+# Markers - fig1B
+
+```{r}
+
+markers <- map(c("DUSP1", "FOS", "SERPINE1"),
+                plotBoxPlot,
+                target_spatial_data_geoDiff) 
+
+
+markers_box_plot <- patchwork::wrap_plots(
+  markers,
+  ncol = 1) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+write_rds(markers_box_plot, "figures/paper/fig1B_extra.rds")
+
+```
+
+```{r}
+
+
+plotBoxPlotStroma <- function(GOI, spatialData, elt="normmat") {
+  
+  pal  <- c("#2dc4cc", "#7570B3", "#e0690d", "#66A61E", "#E6AB02") # "#E7298A", 
+  
+    
+  DF_ <- data.frame(t(assayDataElement(spatialData[GOI, ], elt = elt)), pData(spatialData))
+  DF_ <- DF_ %>% rename("Gene" = all_of(GOI[1]), "Region" = "region")
+    
+  DF_ <- DF_ %>%
+    filter(grepl("Stroma", segment)) %>%
+    mutate(Area = case_when(
+    grepl(pattern = "Adenomyosis", x = Region) ~ "Lesion",
+    grepl(pattern = "Functionalis|Basalis", x = Region) ~ "Endometrium",
+    grepl(pattern = "Myo", x = Region) ~ "Myometrium",
+    TRUE ~ "Unknown" 
+  ))
+
+  
+  DF_$Region <- gsub("Myometrium_near_adeno", "Myo 2", gsub("Myometrium_near_endo", "Myo 1", DF_$Region))
+  
+  DF_$Region <- factor(DF_$Region, ordered = T, levels = c("Adenomyosis", "Functionalis", "Basalis", "Myo 1", "Myo 2"))
+  
+  plot <- ggplot(DF_, aes(y=Gene, x=Region))+
+    geom_boxplot(width = 0.4, alpha = 0.3, na.rm = TRUE)+
+    geom_point(aes(color = Region), position = ggplot2::position_jitterdodge(dodge.width = 0.60),
+               alpha = 0.5,
+               size = 3,
+               stroke = 0,
+               na.rm = TRUE)+
+    facet_wrap(~Area, ncol = 3, scales = "free_x")+
+    theme_cowplot()+
+    scale_color_manual(values=pal) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x = element_text(angle = 40,  hjust=1))+
+    labs(y = paste(GOI,"Expression"), x = "Region") + 
+    theme(legend.position = "none")
+  
+  return(plot)
+}
+
+
+markers <- map(c("ACTG2", "MYH11", "KLRG1", "MEIS2", "MYLK", "APOE"),
+                plotBoxPlotStroma,
+                target_spatial_data_geoDiff) 
+
+
+markers_box_plot <- patchwork::wrap_plots(
+  markers,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+markers_box_plot_wide <- patchwork::wrap_plots(
+  markers,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+write_rds(markers_box_plot, "figures/paper/fig2A_long.rds")
+write_rds(markers_box_plot_wide, "figures/paper/fig2A_wide.rds")
+
+```
+
+# GeoDiff normalised data - DE results
+
+## CD45_Adenomyosis-CD45_Functionalis
+
+```{r}
+
+CD45_adenomyosis_vs_functionalis_box_plots <- map(row.names(limma_GeoDiff_results[["CD45_Adenomyosis-CD45_Functionalis"]])[1:20],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="CD45") 
+
+
+CD45_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  CD45_adenomyosis_vs_functionalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD45_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/CD45_adenomyosis_vs_functionalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+CD45_adenomyosis_vs_functionalis_box_plot
+
+```
+
+## CD31_Adenomyosis-CD31_Functionalis
+
+```{r}
+
+CD31_adenomyosis_vs_functionalis_box_plots <- map(row.names(limma_GeoDiff_results[["CD31_Adenomyosis-CD31_Functionalis"]])[1:20],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="CD31") 
+
+
+CD31_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  CD31_adenomyosis_vs_functionalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD31_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/CD31_adenomyosis_vs_functionalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+CD31_adenomyosis_vs_functionalis_box_plot
+
+```
+
+## Stroma_Adenomyosis-Stroma_Functionalis
+
+```{r}
+
+Stroma_adenomyosis_vs_functionalis_box_plots <- map(row.names(limma_GeoDiff_results[["Stroma_Adenomyosis-Stroma_Functionalis"]])[1:20],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="Stroma") 
+
+
+Stroma_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  Stroma_adenomyosis_vs_functionalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = Stroma_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/Stroma_adenomyosis_vs_functionalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+Stroma_adenomyosis_vs_functionalis_box_plot
+
+```
+
+## PanCK_Adenomyosis-PanCK_Functionalis
+
+```{r}
+
+PanCK_adenomyosis_vs_functionalis_box_plots <- map(row.names(limma_GeoDiff_results[["PanCK_Adenomyosis-PanCK_Functionalis"]])[c(1:13, 15:21)],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="PanCK") 
+
+
+PanCK_adenomyosis_vs_functionalis_box_plot <- patchwork::wrap_plots(
+  PanCK_adenomyosis_vs_functionalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = PanCK_adenomyosis_vs_functionalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/PanCK_adenomyosis_vs_functionalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+PanCK_adenomyosis_vs_functionalis_box_plot
+
+```
+
+## CD45_Adenomyosis-CD45_Basalis
+
+```{r}
+
+CD45_adenomyosis_vs_Basalis_box_plots <- map(row.names(limma_GeoDiff_results[["CD45_Adenomyosis-CD45_Basalis"]])[1:20],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="CD45") 
+
+
+CD45_adenomyosis_vs_Basalis_box_plot <- patchwork::wrap_plots(
+  CD45_adenomyosis_vs_Basalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD45_adenomyosis_vs_Basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/CD45_adenomyosis_vs_basalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+CD45_adenomyosis_vs_Basalis_box_plot
+
+```
+
+## CD31_Adenomyosis-CD31_Basalis
+
+```{r}
+
+CD31_adenomyosis_vs_Basalis_box_plots <- map(row.names(limma_GeoDiff_results[["CD31_Adenomyosis-CD31_Basalis"]])[1:20],
+                                                  plotBoxPlotSegment,
+                                                  target_spatial_data_geoDiff,
+                                                  elt="normmat",
+                                                  segment="CD31") 
+
+
+CD31_adenomyosis_vs_Basalis_box_plot <- patchwork::wrap_plots(
+  CD31_adenomyosis_vs_Basalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = CD31_adenomyosis_vs_Basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/CD31_adenomyosis_vs_basalis_top_DE_genes.pdf",
+          base_height = 13, base_width = 11,bg="white")
+
+
+CD31_adenomyosis_vs_Basalis_box_plot
+
+```
+
+## Stroma_Adenomyosis-Stroma_Basalis
+
+```{r}
+
+Stroma_adenomyosis_vs_Basalis_box_plots <- map(row.names(limma_GeoDiff_results[["Stroma_Adenomyosis-Stroma_Basalis"]])[1:14],
+                                                    plotBoxPlotSegment,
+                                                    target_spatial_data_geoDiff,
+                                                    elt="normmat",
+                                                    segment="Stroma") 
+
+
+Stroma_adenomyosis_vs_Basalis_box_plot <- patchwork::wrap_plots(
+  Stroma_adenomyosis_vs_Basalis_box_plots,
+  ncol = 4) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = Stroma_adenomyosis_vs_Basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/Stroma_adenomyosis_vs_Basalis_top_DE_genes.pdf",
+          base_height = 10, base_width = 11,bg="white")
+
+
+Stroma_adenomyosis_vs_Basalis_box_plot
+
+```
+
+## PanCK_Adenomyosis-PanCK_Basalis
+
+```{r}
+
+PanCK_adenomyosis_vs_Basalis_box_plots <- map(row.names(limma_GeoDiff_results[["PanCK_Adenomyosis-PanCK_Basalis"]])[1:2],
+                                                   plotBoxPlotSegment,
+                                                   target_spatial_data_geoDiff,
+                                                   elt="normmat",
+                                                   segment="PanCK") 
+
+
+PanCK_adenomyosis_vs_Basalis_box_plot <- patchwork::wrap_plots(
+  PanCK_adenomyosis_vs_Basalis_box_plots,
+  ncol = 2) + 
+  patchwork::plot_layout(guides = "collect")
+
+
+save_plot(plot = PanCK_adenomyosis_vs_Basalis_box_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/top_DE_genes/PanCK_adenomyosis_vs_Basalis_top_DE_genes.pdf",
+          base_height = 2.5, base_width = 5.5,bg="white")
+
+
+PanCK_adenomyosis_vs_Basalis_box_plot
+
+```
+
+## Stroma_Myometrium_near_adeno-Stroma_Myometrium_near_endo
+
+### GeoDiff limma-trend
+
+```{r}
+
+pal  <- c("#66A61E", "#E6AB02")
+
+DF_ <- data.frame(t(assayDataElement(target_spatial_data_geoDiff["CTR9", ], elt="normmat")), pData(target_spatial_data_geoDiff))
+
+DF_$region <- gsub("_", " ", DF_$region)
+
+CTR9_plot <- DF_ %>% rename("Gene" = "CTR9", "Region" = "region") %>% dplyr::filter(grepl("Myometrium", Region)) %>%   
+    ggplot(aes(y=Gene, x=Region))+
+    geom_boxplot(width = 0.4, alpha = 0.3, na.rm = TRUE)+
+    geom_point(aes(color = Region), position = ggplot2::position_jitterdodge(dodge.width = 0.60),
+               alpha = 0.5,
+               size = 4,
+               stroke = 0,
+               na.rm = TRUE)+
+    theme_cowplot()+
+    scale_color_manual(values=pal) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x = element_text(angle = 40,  hjust=1))+
+    labs(y = "CTR9 Expression", x = "Region") +
+    stat_compare_means(method = "t.test")
+
+
+
+save_plot(plot = CTR9_plot,
+          filename = "figures/differential_expression/contrast_boxplots_GeoDiff/CTR9.png",
+          base_height = 6, base_width = 6,bg="white")
+
+CTR9_plot 
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::
