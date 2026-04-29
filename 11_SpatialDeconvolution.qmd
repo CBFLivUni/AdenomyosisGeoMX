@@ -1,7 +1,7 @@
 ---
 title: "Endometrial lesions GEOMX"
 subtitle: "Spatial decon"
-author: "Emily Johnson & Jamie Soul"
+author: "Emily Johnson"
 date: today
 date-format: short
 format:
@@ -189,7 +189,7 @@ custom_mtx <- create_profile_matrix(
   discardCellTypes = TRUE
 )         
 
-saveRDS(custom_mtx,file="data/endometrium_immune_clusers.RDS")
+saveRDS(custom_mtx,file="data/endometrium_immune_clusters.RDS")
 ```
 
 ## Set up broad and fine cell profiles

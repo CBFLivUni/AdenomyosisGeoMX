@@ -1,0 +1,284 @@
+---
+title: "Adenomyosis spatial transcriptomics"
+subtitle: "Covariate sensitivity analysis"
+author: "Emily Johnson"
+date: today
+date-format: short
+format:
+  html:
+    self-contained: true
+    theme: litera
+    toc: true
+editor: source
+code-block-bg: true
+code-block-border-left: "#31BAE9"
+---
+# Differential expression analysis
+
+## Load libraries
+
+```{r}
+#| output: false
+#| warning: false
+#| message: false
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(tidyverse)
+library(factoextra)
+library(reshape2)
+library(pheatmap)
+library(writexl)
+library(ggrepel)
+library(edgeR)
+library(limma)
+library(statmod)
+library(variancePartition)
+library(GeoDiff)
+library(janitor)
+library(VennDiagram)
+library(cowplot)
+library(doParallel)
+library(lme4)
+library(RColorBrewer)
+library(wesanderson)
+library(randomcoloR)
+library(SummarizedExperiment)
+source("src/utilityFunctions.R")
+source("src/ArchRpalettes.R") # additional colour palettes
+```
+
+## Load the normalised data
+
+```{r}
+
+target_spatial_data_geoDiff <- readRDS("results/GeoDiff_normalised_spatial_data.RDS")
+
+```
+
+# Process data
+
+```{r}
+
+mat <- target_spatial_data_geoDiff@assayData$normmat
+mat <- na.omit(mat)
+
+pheno <- pData(target_spatial_data_geoDiff)
+
+```
+
+```{r}
+
+table(pheno$E.M.LSP, pheno$Endometriosis)
+table(pheno$E.M.LSP, pheno$Fibroids)
+
+```
+
+## Limma with GeoDiff normalised data method
+
+```{r}
+#| echo: true
+#| eval: true
+
+design  <- model.matrix( ~ 0 + Annotation + E.M.LSP + Endometriosis + Fibroids, pheno)
+colnames(design) <- gsub("Annotation", "", colnames(design))
+
+dupcor <- duplicateCorrelation(mat, design, block=pheno$`Sample ID`)
+
+# This step uses only the genome-wide average for the random effect
+fitDupCor <- lmFit(mat, design, block=pheno$`Sample ID`, correlation=dupcor$consensus)
+
+
+# Create contrasts
+contrastTable <- read.delim("data/contrastGroups.txt")
+contrasts <- apply(contrastTable, 1, function(x) paste0(x[1], "-", x[2]))
+contrasts <- gsub("Annotation", "", contrasts)
+contrasts[18] <- "(CD45_Functionalis + CD31_Functionalis + Stroma_Functionalis + PanCK_Functionalis)/4 - (CD45_Basalis + CD31_Basalis + Stroma_Basalis + PanCK_Basalis)/4"
+
+
+contrast.matrix <- makeContrasts(contrasts = contrasts, 
+            levels = colnames((coef(fitDupCor))))
+colnames(contrast.matrix)[17] <- "Stroma_Adenomyosis-Stroma_Myometrium"
+colnames(contrast.matrix)[18] <- "Functionalis-Basalis"
+
+
+# Fit model
+fit2 <- contrasts.fit(fitDupCor, contrast.matrix)
+fit2 <- eBayes(fit2,trend = TRUE)
+
+
+sensitivity_analysis_limma_GeoDiff_results_table <- lapply(seq_along(contrasts), function(x) getResultsDataFrame(fit2, 
+            x, contrastTable[x, 2], contrastTable[x, 3]))
+
+names(sensitivity_analysis_limma_GeoDiff_results_table) <- colnames(contrast.matrix)
+
+
+# Save results
+saveRDS(sensitivity_analysis_limma_GeoDiff_results_table,file="results/differential_expression/sensitivity_analysis/sensitivity_analysis_limma_GeoDiff_pairwise_comparisons.RDS")
+
+sensitivity_analysis_limma_GeoDiff_results_table_short_names <- sensitivity_analysis_limma_GeoDiff_results_table
+names(sensitivity_analysis_limma_GeoDiff_results_table_short_names) <- str_trunc(names(sensitivity_analysis_limma_GeoDiff_results_table_short_names), 31, "right")
+openxlsx::write.xlsx(sensitivity_analysis_limma_GeoDiff_results_table_short_names, file = "./results/differential_expression/sensitivity_analysis/sensitivity_analysis_limma_GeoDiff_pairwise_comparisons.xlsx", rowNames = TRUE)
+
+
+# Summary of DE expressed genes per comparison 
+GeoDiff_res_summary <- data.frame(summary(decideTests(fit2)))
+GeoDiff_res_summary <- reshape2::dcast(as.data.frame(GeoDiff_res_summary), Var2 ~ Var1, value.var="Freq")
+write.csv(GeoDiff_res_summary, "./results/differential_expression/sensitivity_analysis/sensitivity_analysis_limma_GeoDiff_res_summary.csv")
+
+summary(decideTests(fit2))
+plotSA(fit2, main="Final model: Mean-variance trend (GeoDiff norm)")
+
+```
+
+#### Results summary
+
+```{r}
+
+limma_GeoDiff_norm_DE_res <- DEResPlot(sensitivity_analysis_limma_GeoDiff_results_table[1:12], foldChangeColumn="logFC", FDRColumn="adj.P.Val", stains=c("CD45|CD31|PanCK|Stroma"))
+
+limma_GeoDiff_norm_DE_res[[1]]
+
+# Save results
+ggsave(
+  filename = "figures/differential_expression/sensitivity_analysis/sensitivity_analysis_DE_summary.png",
+  plot = limma_GeoDiff_norm_DE_res[[1]],
+  width = 6,
+  height = 7,
+  units = c("in"),
+  dpi = 300,
+  limitsize = TRUE,
+  bg = "white"
+)
+
+
+```
+
+#### Volcano plots
+
+```{r}
+
+titles <- gsub('_', ' ',
+           gsub('-', ' - ',
+           names(sensitivity_analysis_limma_GeoDiff_results_table)))
+
+
+volcano_plots <- sensitivity_analysis_limma_GeoDiff_results_table[1:12] %>% map2(titles[1:12], plotVolcano, top.genes = 5, quadrants = T) %>% plot_grid(plotlist = . ,ncol = 4)
+
+
+save_plot(plot = volcano_plots, filename = "figures/differential_expression/sensitivity_analysis/sensitivity_analysis_volcano_plots_limma_GeoDiff.png",base_height = 17,base_width = 20.5,bg="white")
+
+
+volcano_plots <- sensitivity_analysis_limma_GeoDiff_results_table %>% map2(titles, plotVolcano, top.genes = 5, quadrants = T) 
+
+
+```
+
+
+# Correlation with original results
+
+```{r}
+
+limma_GeoDiff_results_table <- readRDS("results/differential_expression/limma_GeoDiff_pairwise_comparisons.RDS")
+
+```
+
+```{r}
+
+titles <- names(limma_GeoDiff_results_table[1:12])
+
+all_res <- list(limma_GeoDiff_results_table[1:12], sensitivity_analysis_limma_GeoDiff_results_table[1:12], titles)
+
+
+correlation_plots <- pmap(all_res, plotCorrelation, xlab="Original model t-statistics", ylab="Model with extra covariates t-statistics") %>% plot_grid(plotlist = . ,ncol = 3)
+
+save_plot(plot = correlation_plots, filename = "figures/differential_expression/sensitivity_analysis/geodiff_results_correlation.png",base_height = 17,base_width = 16,bg="white")
+
+```
+# Secretory subphase analysis
+
+Examine effects of secretory subphase on hormone receptor expression.
+
+```{r}
+
+pheno_full <- pData(target_spatial_data_geoDiff)
+
+# Sample distribution by subphase
+subphase_summary <- pheno_full %>%
+  group_by(E.M.LSP, region, segment) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(E.M.LSP, region, segment)
+
+cat("Sample distribution by secretory subphase:\n")
+cat("Early n=1, Mid n=4, Late n=5\n\n")
+print(subphase_summary %>% 
+        group_by(E.M.LSP) %>% 
+        summarise(Total = sum(n)))
+
+```
+
+```{r}
+
+# Extract hormone receptor expression by subphase
+receptor_expr <- mat[hormone_genes, , drop = FALSE] %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("sample") %>%
+  left_join(
+    pheno_full %>% rownames_to_column("sample") %>% dplyr::select(sample = "sample", E.M.LSP, region, segment),
+    by = "sample"
+  )
+
+```
+
+```{r}
+
+# Visualize by subphase and region
+receptor_expr_long <- receptor_expr %>%
+  pivot_longer(cols = all_of(hormone_genes),
+               names_to = "Receptor",
+               values_to = "Expression")
+
+receptor_subphase_plot <- ggplot(
+  receptor_expr_long %>% filter(Receptor %in% c("ESR1", "ESR2", "PGR", "AR")), 
+  aes(x = region, y = Expression)) +
+  geom_boxplot(width = 0.4, alpha = 0.3, na.rm = TRUE)+
+  geom_point(aes(color = E.M.LSP), position = ggplot2::position_jitterdodge(dodge.width = 0.60),
+               alpha = 0.5,
+               size = 3,
+               stroke = 0,
+               na.rm = TRUE) + 
+  facet_wrap(~Receptor + segment, scales = "free", ncol = 4) +
+    theme_half_open() +
+  background_grid() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Hormone Receptor Expression by Secretory Subphase",
+    subtitle = "Early (n=1), Mid (n=4), Late (n=5)",
+    x = "Region", 
+    y = "Normalised Expression", 
+    fill = "Subphase"
+  )
+
+print(receptor_subphase_plot)
+
+ggsave(
+  filename = "figures/differential_expression/sensitivity_analysis/receptor_expression_by_subphase.pdf",
+  plot = receptor_subphase_plot,
+  width = 13,
+  height = 17.5,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+```
+
+::: {.callout-note collapse="true"}
+## Session Info
+
+```{r}
+sessionInfo()
+```
+:::
