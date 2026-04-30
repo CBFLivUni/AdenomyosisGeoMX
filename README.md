@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15642732.svg)](https://doi.org/10.5281/zenodo.15642732)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19917402.svg)](https://doi.org/10.5281/zenodo.19917402)
 
 # Spatial transcriptomics of Adenomyosis lesions using Nanostring GeoMX
 
